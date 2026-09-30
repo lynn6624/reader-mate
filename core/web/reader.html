@@ -210,6 +210,11 @@
   }
   #hlMenu .m:hover{background:var(--bg); color:var(--accent)}
   #hlMenu .sep{width:1px; background:var(--line); margin:5px 2px}
+  /* 窄屏：四格放不下时允许换行 + 收紧内边距，避免顶到屏幕边 */
+  @media (max-width: 419px){
+    #hlMenu{max-width:calc(100vw - 16px); flex-wrap:wrap; row-gap:2px}
+    #hlMenu .m{padding:6px 9px; font-size:12.5px}
+  }
 
   /* ---------- 批注面板 ---------- */
   #hlPanel{
@@ -404,6 +409,8 @@
   <button class="m" data-act="note">写批注</button>
   <span class="sep"></span>
   <button class="m" data-act="copy">复制</button>
+  <span class="sep"></span>
+  <button class="m" data-act="read" title="从选区所在段开始朗读">朗读</button>
 </div>
 
 <aside id="hlPanel">
@@ -861,6 +868,41 @@ function ttsSpeakSeg(idx){
   });
 }
 
+/* 从选中文字所在的那一段开始朗读。
+ * 选区可能是某段的中间，所以用 startSegIdx 定位段；段 start 就是 startOffset。
+ * 行为：当前在念 → 先停再从该段重开（用户主动选择起点，这点打断是预期的）；
+ *       暂停中 → 也按"从该段重开"处理（自然衔接，参数继续生效）。
+ * 不动 offset（眼睛位置），只动 ttsOffset。 */
+function ttsReadFromSelection(){
+  if (!hlSel || !hlSel.info) return;
+  if (!ttsSupported()){ toast("这个环境不支持朗读"); return; }
+  if (!state.book){ toast("先打开一本书再朗读"); return; }
+  const segIdx = hlSel.info.startSegIdx;
+  const seg = state.segs[segIdx];
+  if (!seg){ toast("选区没有命中段落"); return; }
+  // 从「最近停顿标点之后」开始念（002 定的规则）：第一句永远是完整的句子，不会念半截。
+  const local = ttsPunctStart(seg.text, hlSel.info.startLocal || 0);
+  // 静默停掉（不要 toast「已停止」再 toast「开始朗读」），然后从该处起念
+  if (tts.state !== "idle") ttsStopInternal(true);
+  ttsStart(seg.start + local);
+}
+
+/* 从句中位置向前找最近的停顿标点，返回「标点之后」的段内偏移；找不到就返回 0（从段首念）。
+ * 并跳过紧跟标点的收尾引号括号，免得把 」） 留在外面。 */
+const TTS_PAUSE_RE = /[。！？；：…!?;:]/;
+const TTS_TAIL_RE = /["'”’」』）)】》]/;
+function ttsPunctStart(text, local){
+  if (!text || !local || local <= 0) return 0;
+  for (let i = Math.min(local, text.length) - 1; i >= 0; i--){
+    if (TTS_PAUSE_RE.test(text.charAt(i))){
+      let j = i + 1;
+      while (j < text.length && TTS_TAIL_RE.test(text.charAt(j))) j++;
+      return j;
+    }
+  }
+  return 0;
+}
+
 function ttsStart(fromOffset){
   if (!ttsSupported()){ toast("这个环境不支持朗读"); return; }
   if (!state.book){ toast("先打开一本书再朗读"); return; }
@@ -968,13 +1010,22 @@ function ttsInit(){
   setTimeout(ttsFillVoiceSelect, 400);
   setTimeout(ttsFillVoiceSelect, 1500);
   // 4) 控件初始态
+  // 改语速/音色的语义：
+  //   playing → 立刻停掉当前段，从当前这一段用新参数重念（用户主动操作，这点打断是预期的）
+  //   paused  → 只更新参数；点"继续"时新参数自然生效
+  //   idle    → 只更新参数
+  // 重念的是同一段（state.ttsOffset 没变），不会触发额外的 tts_offset 落盘。
   const rateSel = $("#ttsRate");
   if (rateSel){
     rateSel.value = String(tts.rate);
     rateSel.addEventListener("change", () => {
       tts.rate = parseFloat(rateSel.value) || 1;
       try { localStorage.setItem("r_tts_rate", String(tts.rate)); } catch (e) {}
-      // 语速变化：正在念就让下一段生效（speechSynthesis 没"in-place 改语速"的契约）
+      if (tts.state === "playing"){
+        const off = state.ttsOffset || 0;   // 当前段的 start
+        ttsStopInternal(true);              // 静默停，flushSaveNow 把同位置写一次
+        ttsStart(off);                      // 从当前段重念；ttsSpeakSeg 会再 mark 一次（同值，不引发额外 flush）
+      }
     });
   }
   const voiceSel = $("#ttsVoice");
@@ -982,6 +1033,11 @@ function ttsInit(){
     voiceSel.addEventListener("change", () => {
       tts.voice = voiceSel.value || "default";
       try { localStorage.setItem("r_tts_voice", tts.voice); } catch (e) {}
+      if (tts.state === "playing"){
+        const off = state.ttsOffset || 0;
+        ttsStopInternal(true);
+        ttsStart(off);
+      }
     });
   }
   const followEl = $("#ttsFollow");
@@ -1277,6 +1333,7 @@ function ensureHlMenu(){
       if (act === "line") doHighlight("line");
       else if (act === "note") doHighlight("note");
       else if (act === "copy") doCopy();
+      else if (act === "read") ttsReadFromSelection();
       hideHlMenu();
     });
   });
