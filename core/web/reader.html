@@ -753,9 +753,22 @@ function createSpeechSynthesisEngine(){
     },
   };
 }
+/* 云端嗓子失败 → 自动切回内置嗓子，并把原因**说出来**（绝不许静默无声：
+   002 踩过一次，整本书"念"完却一点声音都没有）。 */
+let _ttsFallbackOnce = false;
+function backendTtsFailed(msg){
+  if (ttsMode === "backend") ttsMode = "system";
+  if (_ttsFallbackOnce) return;
+  _ttsFallbackOnce = true;
+  showErr("云端朗读用不了：" + msg + "\n" +
+          "已自动切回系统嗓子（免费的那个），现在应该能正常念。\n" +
+          "修好 data/tts.json 里的 key / group 后，重启后端即可再用云端。");
+}
+
 /* 后端 TTS 引擎：把文字发给读伴后端，拿回 mp3 用 <audio> 播。
    用途：有些 WebView 根本不支持 speechSynthesis（Operit 就是），但音频播放都支持。
    同一套「当前这句」闸（cur）在这儿也必须成立——audio 的 onended 同样会迟到。 */
+let beSeq = 0;   // 取音频的请求序号：换段/停止时 +1，让在途的旧请求作废
 function createBackendTtsEngine(){
   let cur = null;
   return {
@@ -768,22 +781,40 @@ function createBackendTtsEngine(){
       if (opts && typeof opts.rate === "number") q.set("speed", String(opts.rate));
       const tk = getToken();
       if (tk) q.set("token", tk);   // <audio> 带不了请求头，只能走查询参数（后端认 ?token=）
-      const a = new Audio("/api/tts?" + q.toString());
-      const once = function(){
-        if (cur !== a || a.__ended) return;
-        a.__ended = true;
-        cur = null;
-        if (typeof onEnd === "function") onEnd();
-      };
-      a.onended = once;
-      a.onerror = once;
-      cur = a;
-      const p = a.play();
-      if (p && typeof p.catch === "function") p.catch(function(){ once(); });  // 播不动也别卡住
+      const seq = ++beSeq;
+      // 先用 fetch 取音频、再交给 <audio> 播：这样出错能拿到后端给的原因。
+      //（直接让 <audio src> 去拉的话，onerror 只会说"我失败了"，不知道为什么。）
+      fetchAuth("/api/tts?" + q.toString()).then(function(r){
+        if (r.ok) return r.blob();
+        return r.json().then(
+          function(j){ throw new Error((j && j.error) || ("HTTP " + r.status)); },
+          function(){ throw new Error("HTTP " + r.status); });
+      }).then(function(blob){
+        if (seq !== beSeq) return;              // 期间被停过、或又在念别的了：丢弃
+        const ourl = URL.createObjectURL(blob);
+        const a = new Audio(ourl);
+        const once = function(){
+          if (cur !== a || a.__ended) return;
+          a.__ended = true;
+          cur = null;
+          try { URL.revokeObjectURL(ourl); } catch (e) {}
+          if (typeof onEnd === "function") onEnd();
+        };
+        a.onended = once;
+        a.onerror = once;
+        cur = a;
+        const p = a.play();
+        if (p && typeof p.catch === "function") p.catch(function(){ once(); });
+      }).catch(function(e){
+        if (seq !== beSeq) return;
+        backendTtsFailed(e && e.message ? e.message : "取音频失败");
+        if (typeof onEnd === "function") onEnd();   // 让状态机接着走，别卡在原地
+      });
     },
     pause: function(){ if (cur) { try { cur.pause(); } catch (e){} } },
     resume: function(){ if (cur) { try { cur.play(); } catch (e){} } },
     stop: function(){
+      beSeq++;                          // 在途的取音频请求作废
       const a = cur;
       cur = null;                       // 先作废回调，再停（跟 speechSynthesis 那套一致）
       if (a) { try { a.pause(); a.src = ""; } catch (e){} }

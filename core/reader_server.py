@@ -110,6 +110,7 @@ def load_tts_config() -> dict:
         "model": pick("READER_TTS_MODEL", "model"),
         "voice": pick("READER_TTS_VOICE", "voice"),
         "base": pick("READER_TTS_BASE", "base").rstrip("/"),
+        "group": pick("READER_TTS_GROUP", "group"),
     }
 
 
@@ -132,9 +133,15 @@ def tts_minimax(text: str, voice: str, speed: float, cfg: dict):
         "output_format": "hex",
     }
     base = cfg["base"] or "https://api.minimax.cn"
+    url = base + "/v1/t2a_v2"
+    # MiniMax 的 TTS 按「GroupId」定位账号：不带它，有的账号直接报 401 / token is unusable。
+    # 官方文档与两个独立实现（hermes-agent、Open-LLM-VTuber）都把它放在 URL 查询参数上。
+    gid = cfg.get("group") or ""
+    if gid and "GroupId=" not in url:
+        url += ("&" if "?" in url else "?") + "GroupId=" + urllib.parse.quote(gid)
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
-        base + "/v1/t2a_v2", data=data, method="POST",
+        url, data=data, method="POST",
         headers={"Authorization": "Bearer " + cfg["key"], "Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=60) as r:
         j = json.loads(r.read().decode("utf-8"))

@@ -487,6 +487,7 @@ V1 故意不做的（也**不打算**在 INSTALL 层面绕过）：
 {
   "provider": "minimax",
   "key": "你的 API key",
+  "group": "你的 GroupId",
   "voice": "female-shaonv"
 }
 ```
@@ -497,14 +498,19 @@ V1 故意不做的（也**不打算**在 INSTALL 层面绕过）：
 | --- | --- |
 | `READER_TTS` | `minimax` 或 `openai`；不设 = 关闭 |
 | `READER_TTS_KEY` | API key |
+| `READER_TTS_GROUP` | MiniMax 的 GroupId（**它要求带**，见下） |
 | `READER_TTS_MODEL` | 可选。默认 `minimax=speech-02-hd` / `openai=tts-1` |
 | `READER_TTS_VOICE` | 可选。默认 `minimax=female-shaonv` / `openai=alloy` |
 | `READER_TTS_BASE` | 可选。自定义 endpoint（OpenAI 兼容服务，如硅基流动） |
 
 ### 支持哪些服务
 
-- **MiniMax**：`provider: "minimax"`，音色名见它的[系统音色列表](https://platform.minimax.cn/faq/system-voice-id)。国内直连，也支持你自己克隆的音色。
+- **MiniMax**：`provider: "minimax"`。**除了 key 还要 `group`（GroupId）**——它的 TTS 按 GroupId 定位账号，**不带就报 401 / `token is unusable`**。GroupId 在控制台的「账户管理 → 基本信息」里。音色名见它的[系统音色列表](https://platform.minimax.cn/faq/system-voice-id)，也支持你自己克隆的音色（把 `voice` 填成克隆音色 ID）。
 - **任何 OpenAI 兼容的 TTS**：`provider: "openai"`，把 `base` 指到对方域名即可。
+
+### 云端用不了的时候
+
+**会自动切回系统嗓子**，并在页面底部红条上说明原因（不会静默无声）。修好 `data/tts.json` 后重启后端即可再用云端。
 
 ### 怎么知道生效了
 
