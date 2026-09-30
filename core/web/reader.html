@@ -767,13 +767,38 @@ function backendTtsFailed(msg){
 
 /* 后端 TTS 引擎：把文字发给读伴后端，拿回 mp3 用 <audio> 播。
    用途：有些 WebView 根本不支持 speechSynthesis（Operit 就是），但音频播放都支持。
-   同一套「当前这句」闸（cur）在这儿也必须成立——audio 的 onended 同样会迟到。 */
-let beSeq = 0;   // 取音频的请求序号：换段/停止时 +1，让在途的旧请求作废
+
+   两个移动端的坑（op001 在手机上踩过并给了修法，2026-09-30）：
+   ① **必须复用一个 <audio> 元素**：Android WebView 默认 mediaPlaybackRequiresUserGesture=true，
+      非用户手势栈里的 play() 会被拒（NotSupportedError）——每段 new Audio 会"闪得很快却没声"。
+   ② **必须在用户手势里 unlock()**：先在同一元素上播一段静音音频，换来"可自动播放"的许可；
+      否则连第一段都播不出来（整本无声）。电脑端不受这些限制，所以这坑只在手机上现形。
+   ③ 取音频仍走 fetch→blob：这样失败时能拿到后端给的真实原因；靠 unlock() 补回手势许可，两者兼得。 */
 function createBackendTtsEngine(){
-  let cur = null;
+  let beSeq = 0;        // 取音频的请求序号：换段/停止时 +1，让在途的旧请求作废
+  let el = null;        // 复用的那个 <audio>（关键：别每段 new）
+  let unlocked = false; // 是否已在用户手势里换到播放许可
+  // 一小段合法的静音 wav：拿它换许可，不发出声音
+  const SILENT = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+  function getEl(){
+    if (!el){ el = new Audio(); el.preload = "auto"; }
+    return el;
+  }
   return {
     isSupported: () => true,        // 能不能用由 ttsMode 决定（后端没配就不会选它）
     getVoices: () => [{ voiceURI: "", name: "后端默认音色" }],
+    /* 在用户手势里调一次（点「朗读」时），给这个元素换自动播放许可。 */
+    unlock: function(){
+      if (unlocked) return;
+      unlocked = true;
+      try {
+        const a = getEl();
+        a.muted = true;
+        a.src = SILENT;
+        const p = a.play();
+        if (p && typeof p.catch === "function") p.catch(function(){});
+      } catch (e) { /* 换不到也不报错：真播时若被拒会走 onerror → 回落系统嗓子 */ }
+    },
     speak: function(text, opts, onEnd){
       const q = new URLSearchParams();
       q.set("text", text);
@@ -782,7 +807,7 @@ function createBackendTtsEngine(){
       const tk = getToken();
       if (tk) q.set("token", tk);   // <audio> 带不了请求头，只能走查询参数（后端认 ?token=）
       const seq = ++beSeq;
-      // 先用 fetch 取音频、再交给 <audio> 播：这样出错能拿到后端给的原因。
+      // 先用 fetch 取音频、再交给复用的那个 <audio> 播：出错能拿到后端给的原因。
       //（直接让 <audio src> 去拉的话，onerror 只会说"我失败了"，不知道为什么。）
       fetchAuth("/api/tts?" + q.toString()).then(function(r){
         if (r.ok) return r.blob();
@@ -792,17 +817,17 @@ function createBackendTtsEngine(){
       }).then(function(blob){
         if (seq !== beSeq) return;              // 期间被停过、或又在念别的了：丢弃
         const ourl = URL.createObjectURL(blob);
-        const a = new Audio(ourl);
+        const a = getEl();                      // ← 复用同一个元素（手势许可才有效）
+        // 元素是复用的，所以不能再用「引用相等」判断新旧，要用序号
         const once = function(){
-          if (cur !== a || a.__ended) return;
-          a.__ended = true;
-          cur = null;
+          if (seq !== beSeq || a.__ttsDone === seq) return;
+          a.__ttsDone = seq;
           try { URL.revokeObjectURL(ourl); } catch (e) {}
           if (typeof onEnd === "function") onEnd();
         };
         a.onended = once;
         a.onerror = once;
-        cur = a;
+        try { a.muted = false; a.src = ourl; } catch (e) {}
         const p = a.play();
         if (p && typeof p.catch === "function") p.catch(function(){ once(); });
       }).catch(function(e){
@@ -811,13 +836,11 @@ function createBackendTtsEngine(){
         if (typeof onEnd === "function") onEnd();   // 让状态机接着走，别卡在原地
       });
     },
-    pause: function(){ if (cur) { try { cur.pause(); } catch (e){} } },
-    resume: function(){ if (cur) { try { cur.play(); } catch (e){} } },
+    pause: function(){ if (el) { try { el.pause(); } catch (e){} } },
+    resume: function(){ if (el) { try { el.play(); } catch (e){} } },
     stop: function(){
       beSeq++;                          // 在途的取音频请求作废
-      const a = cur;
-      cur = null;                       // 先作废回调，再停（跟 speechSynthesis 那套一致）
-      if (a) { try { a.pause(); a.src = ""; } catch (e){} }
+      if (el) { try { el.pause(); } catch (e){} }
     },
   };
 }
@@ -831,6 +854,8 @@ const ttsEngine = {
   isSupported: () => (ttsMode === "backend") ? true : ttsEngineSystem.isSupported(),
   getVoices: () => (ttsMode === "backend") ? ttsEngineBackend.getVoices() : ttsEngineSystem.getVoices(),
   speak: (t, o, cb) => (ttsMode === "backend") ? ttsEngineBackend.speak(t, o, cb) : ttsEngineSystem.speak(t, o, cb),
+  // 在用户手势里换音频播放许可（只有后端音频需要；系统语音合成不需要）
+  unlock: () => { if (ttsMode === "backend" && ttsEngineBackend.unlock) ttsEngineBackend.unlock(); },
   pause: () => (ttsMode === "backend") ? ttsEngineBackend.pause() : ttsEngineSystem.pause(),
   resume: () => (ttsMode === "backend") ? ttsEngineBackend.resume() : ttsEngineSystem.resume(),
   stop: () => (ttsMode === "backend") ? ttsEngineBackend.stop() : ttsEngineSystem.stop(),
@@ -1003,6 +1028,9 @@ function ttsStart(fromOffset){
   if (!ttsSupported()){ toast("这个环境不支持朗读"); return; }
   if (!state.book){ toast("先打开一本书再朗读"); return; }
   if (tts.state !== "idle") return;   // 已开始就别重入
+  // 点「朗读」这一下是用户手势——趁它还在栈里，给后端音频元素换自动播放许可。
+  // （手机 WebView 不给非手势的 play()，不换的话整本都播不出来。）
+  if (ttsEngine.unlock) ttsEngine.unlock();
   // 决定从哪一段开始：fromOffset 显式指定优先；其次 state.ttsOffset（=上次念到哪）；再次当前可见段
   let startOff = (typeof fromOffset === "number" && fromOffset > 0) ? fromOffset : (state.ttsOffset || 0);
   if (!startOff){
