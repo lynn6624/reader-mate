@@ -1,0 +1,1465 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>读伴</title>
+<style>
+  :root{
+    --bg:#f5efe3; --fg:#2f2a24; --dim:#8a8073; --line:#e0d6c4; --card:#fffaf0;
+    --accent:#9a6b3f; --mark:#ffe08a; --shadow:0 8px 30px rgba(80,60,30,.14);
+    --font-size:19px; --line-h:1.9; --col:46rem;
+  }
+  html[data-theme="dark"]{
+    --bg:#15171b; --fg:#d9d4cb; --dim:#7d7a75; --line:#2a2e34; --card:#1c1f24;
+    --accent:#c79a63; --mark:#6b5a20; --shadow:0 8px 30px rgba(0,0,0,.45);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    background:var(--bg); color:var(--fg);
+    font-family:"Source Han Serif SC","Noto Serif CJK SC",Georgia,"Songti SC",SimSun,serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  button,input,select{font-family:inherit}
+
+  /* ---------- 顶栏 ---------- */
+  #bar{
+    position:fixed; top:0; left:0; right:0; height:52px; z-index:20;
+    display:flex; align-items:center; gap:10px; padding:0 12px;
+    /* 不用 color-mix：老 WebView 不支持（要 Chrome 111+），否则顶栏会变透明 */
+    background:var(--bg);
+    backdrop-filter:blur(8px); border-bottom:1px solid var(--line);
+  }
+  .ibtn{
+    border:1px solid var(--line); background:var(--card); color:var(--fg);
+    border-radius:8px; padding:6px 10px; font-size:13px; cursor:pointer; white-space:nowrap;
+  }
+  .ibtn:hover{border-color:var(--accent); color:var(--accent)}
+  #titleBox{flex:1; min-width:0; display:flex; align-items:baseline; gap:10px}
+  #bkTitle{font-size:15px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  #bkChapter{font-size:12px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  #pct{font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums}
+  #barRight{display:flex; align-items:center; gap:6px}
+
+  #pbar{position:fixed; top:52px; left:0; right:0; height:2px; background:transparent; z-index:20}
+  #pbar i{display:block; height:100%; width:0; background:var(--accent); transition:width .2s}
+
+  /* ---------- 阅读区 ---------- */
+  #view{position:fixed; inset:54px 0 0 0; overflow-y:auto; scroll-behavior:auto}
+  #reader{
+    max-width:var(--col); margin:0 auto; padding:28px 26px 45vh;
+    font-size:var(--font-size); line-height:var(--line-h);
+  }
+  .seg{margin:0 0 .62em; white-space:pre-wrap; word-break:break-word}
+  .seg.chap{
+    margin:2.1em 0 .9em; font-size:1.12em; font-weight:700; text-align:center;
+    letter-spacing:.04em; color:var(--accent);
+  }
+  .seg mark{background:var(--mark); color:inherit; border-radius:2px}
+  /* 搜索命中：划线那套规则把 mark 背景设成了透明，这里要把黄底抢回来 */
+  .seg mark.cur{background:var(--mark) !important; outline:2px solid var(--accent)}
+
+  #empty{max-width:36rem; margin:12vh auto; text-align:center; color:var(--dim); line-height:2}
+  #empty h1{font-size:20px; color:var(--fg); margin-bottom:6px}
+  #empty code{background:var(--card); border:1px solid var(--line); border-radius:4px; padding:1px 5px; font-size:12px}
+
+  /* ---------- 抽屉 ---------- */
+  #mask{position:fixed; inset:0; background:rgba(20,15,5,.35); z-index:30; display:none}
+  #mask.on{display:block}
+  aside{
+    position:fixed; top:0; bottom:0; width:min(400px,86vw); z-index:31;
+    background:var(--card); border:0; box-shadow:var(--shadow);
+    display:flex; flex-direction:column; transition:transform .22s ease;
+  }
+  #libPanel{left:0; border-right:1px solid var(--line); transform:translateX(-102%)}
+  #libPanel.on{transform:none}
+  #searchPanel{right:0; border-left:1px solid var(--line); transform:translateX(102%)}
+  #searchPanel.on{transform:none}
+  aside header{
+    display:flex; align-items:center; gap:8px; padding:12px 14px; border-bottom:1px solid var(--line);
+  }
+  aside header b{font-size:14px; flex:1}
+  aside .body{flex:1; overflow-y:auto; padding:10px 12px}
+  .btn{
+    border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:8px;
+    padding:7px 12px; font-size:13px; cursor:pointer; display:inline-block;
+  }
+  .btn:hover{border-color:var(--accent)}
+  .btn.primary{background:var(--accent); color:#fff; border-color:var(--accent)}
+
+  .book{
+    position:relative; padding:11px 34px 11px 12px; border:1px solid var(--line);
+    border-radius:10px; margin-bottom:9px; cursor:pointer; background:var(--bg);
+  }
+  .book:hover{border-color:var(--accent)}
+  .book .n{font-size:14px; font-weight:600; margin-bottom:5px; word-break:break-all}
+  .book .m{font-size:11.5px; color:var(--dim)}
+  .book .del{
+    position:absolute; right:8px; top:9px; border:0; background:transparent;
+    color:var(--dim); cursor:pointer; font-size:15px; line-height:1; padding:3px;
+  }
+  .book .del:hover{color:#c0392b}
+  .book .bar{height:3px; border-radius:3px; background:var(--line); margin-top:7px; overflow:hidden}
+  .book .bar i{display:block; height:100%; background:var(--accent)}
+
+  #q{
+    width:100%; padding:9px 11px; font-size:14px; border-radius:9px;
+    border:1px solid var(--line); background:var(--bg); color:var(--fg); outline:none;
+  }
+  #q:focus{border-color:var(--accent)}
+  #hits{margin-top:10px; font-family:system-ui,"Microsoft YaHei",sans-serif; font-size:12.5px}
+  .hit{padding:8px 9px; border-radius:8px; cursor:pointer; border:1px solid transparent; margin-bottom:6px; line-height:1.7}
+  .hit:hover{background:var(--bg); border-color:var(--line)}
+  .hit .pre,.hit .post{color:var(--dim)}
+  .hit b{color:var(--accent)}
+  .hint{font-size:12px; color:var(--dim); padding:6px 2px}
+
+  #toast{
+    position:fixed; left:50%; bottom:28px; transform:translateX(-50%) translateY(20px);
+    background:var(--fg); color:var(--bg); padding:9px 16px; border-radius:20px;
+    font-size:13px; z-index:60; opacity:0; pointer-events:none; transition:all .22s;
+    font-family:system-ui,"Microsoft YaHei",sans-serif; max-width:80vw;
+  }
+  #toast.on{opacity:1; transform:translateX(-50%)}
+  #drop{
+    position:fixed; inset:0; z-index:70; display:none; align-items:center; justify-content:center;
+    background:rgba(154,107,63,.22); font-size:20px; color:var(--fg);
+    border:3px dashed var(--accent); font-family:system-ui,sans-serif;
+  }
+  #drop.on{display:flex}
+
+  /* ---------- 划线：四种线型 ---------- */
+  /* 默认 line（下划线）；其它三个类切换即可 */
+  .seg mark{background:transparent; color:inherit; border-radius:2px; padding:0}
+  .seg mark.line{
+    background:linear-gradient(transparent 62%,var(--mark) 62%,var(--mark) 92%,transparent 92%);
+  }
+  .seg mark.wave{
+    background:repeating-linear-gradient(
+      -45deg, transparent 60%, var(--mark) 60%, var(--mark) 80%, transparent 80%, transparent 100%,
+      var(--mark) 100%, var(--mark) 120%, transparent 120%);
+    background-size:6px 100%;
+    background-repeat:repeat-x;
+    background-position:0 78%;
+    background-color:transparent;
+  }
+  .seg mark.dash{
+    border-bottom:2px dashed var(--mark);
+  }
+  .seg mark.bg{
+    background:var(--mark);
+  }
+  .seg mark.flash{
+    animation:hlflash 1.2s ease-out;
+  }
+  @keyframes hlflash{
+    0%{box-shadow:0 0 0 0 var(--accent)}
+    60%{box-shadow:0 0 0 6px rgba(154,107,63,.25)}
+    100%{box-shadow:0 0 0 0 transparent}
+  }
+
+  /* ---------- 选中浮动菜单 ---------- */
+  #hlMenu{
+    position:fixed; z-index:55; display:none;
+    background:var(--card); border:1px solid var(--line); border-radius:10px;
+    box-shadow:var(--shadow); padding:4px;
+    font-family:system-ui,"Microsoft YaHei",sans-serif; font-size:13px;
+    user-select:none;
+  }
+  #hlMenu.on{display:flex; gap:2px}
+  #hlMenu .m{
+    border:0; background:transparent; color:var(--fg); cursor:pointer;
+    padding:7px 11px; border-radius:7px; line-height:1;
+  }
+  #hlMenu .m:hover{background:var(--bg); color:var(--accent)}
+  #hlMenu .sep{width:1px; background:var(--line); margin:5px 2px}
+
+  /* ---------- 批注面板 ---------- */
+  #hlPanel{
+    position:fixed; right:0; top:0; bottom:0; width:min(420px,90vw); z-index:40;
+    background:var(--card); border-left:1px solid var(--line);
+    box-shadow:var(--shadow); display:none; flex-direction:column;
+  }
+  #hlPanel.on{display:flex}
+  #hlPanel header{
+    display:flex; align-items:center; gap:8px; padding:12px 14px;
+    border-bottom:1px solid var(--line);
+  }
+  #hlPanel header b{flex:1; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  #hlPanel .qbox{
+    padding:13px 14px; border-bottom:1px solid var(--line);
+    background:var(--bg);
+    font-size:13.5px; line-height:1.7; color:var(--fg); max-height:30vh; overflow:auto;
+    white-space:pre-wrap; word-break:break-word;
+  }
+  #hlPanel .thread{
+    flex:1; overflow-y:auto; padding:10px 14px;
+    display:flex; flex-direction:column; gap:9px;
+  }
+  #hlPanel .cm{
+    border:1px solid var(--line); border-radius:9px; padding:8px 10px;
+    font-size:13px; line-height:1.7; background:var(--bg);
+  }
+  #hlPanel .cm .who{font-size:11.5px; color:var(--dim); margin-bottom:3px}
+  #hlPanel .cm .who.ai{color:var(--accent)}
+  #hlPanel .cm .who.user{color:var(--fg)}
+  #hlPanel .cm .at{color:var(--dim); font-size:11px; margin-left:6px}
+  #hlPanel .cm .tx{white-space:pre-wrap; word-break:break-word}
+  #hlPanel .empty{color:var(--dim); font-size:12.5px; padding:6px 4px}
+  #hlPanel .inputBox{
+    border-top:1px solid var(--line); padding:10px 12px;
+    display:flex; flex-direction:column; gap:6px; background:var(--card);
+  }
+  #hlPanel .inputBox .row{display:flex; gap:8px; align-items:flex-end}
+  #hlPanel .inputBox textarea{
+    flex:1; min-height:54px; max-height:160px; resize:vertical;
+    border:1px solid var(--line); border-radius:8px; padding:8px 10px;
+    font-family:inherit; font-size:13px; line-height:1.55;
+    background:var(--bg); color:var(--fg); outline:none;
+  }
+  #hlPanel .inputBox textarea:focus{border-color:var(--accent)}
+  #hlPanel .inputBox textarea:disabled{background:var(--line); color:var(--dim)}
+  #hlPanel .inputBox .meta{display:flex; justify-content:space-between; font-size:11.5px; color:var(--dim)}
+  #hlPanel .inputBox .send{
+    border:0; background:var(--accent); color:#fff; border-radius:8px;
+    padding:8px 14px; font-size:13px; cursor:pointer;
+  }
+  #hlPanel .inputBox .send:disabled{background:var(--line); color:var(--dim); cursor:not-allowed}
+  #hlPanel .fullhint{
+    padding:12px 14px; border-top:1px solid var(--line);
+    color:var(--dim); font-size:12.5px; text-align:center;
+  }
+
+  /* ---------- 书库抽屉：tabs ---------- */
+  #libPanel header{
+    flex-wrap:wrap;
+  }
+  #libTabs{display:flex; gap:6px; width:100%; margin-top:8px; padding-top:8px; border-top:1px dashed var(--line)}
+  #libTabs .t{
+    border:0; background:transparent; color:var(--dim); cursor:pointer;
+    padding:4px 9px; border-radius:6px; font-size:13px; font-family:inherit;
+  }
+  #libTabs .t.on{background:var(--bg); color:var(--accent); border:1px solid var(--line)}
+  #libTabs .t:hover{color:var(--accent)}
+  .idxList, .excList{padding:2px 0}
+  .idxList .item{
+    border:1px solid var(--line); border-radius:9px; padding:9px 11px; margin-bottom:8px;
+    background:var(--bg);
+  }
+  .idxList .item .q{
+    font-size:13px; line-height:1.65; color:var(--fg);
+    white-space:pre-wrap; word-break:break-word;
+    overflow:hidden; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical;
+  }
+  .idxList .item .meta{
+    display:flex; justify-content:space-between; align-items:center;
+    margin-top:7px; font-size:11.5px; color:var(--dim);
+  }
+  .idxList .item .meta button{
+    border:1px solid var(--line); background:var(--card); color:var(--fg);
+    border-radius:6px; padding:3px 9px; cursor:pointer; font-size:12px;
+  }
+  .idxList .item .meta button:hover{border-color:var(--accent); color:var(--accent)}
+  .idxList .empty, .excList .empty{color:var(--dim); font-size:12.5px; padding:18px 6px; text-align:center}
+  .excList .item{
+    border-left:3px solid var(--accent); background:var(--bg);
+    border-radius:0 8px 8px 0; padding:9px 11px; margin-bottom:9px;
+  }
+  .excList .item .q{
+    font-size:13px; line-height:1.7; color:var(--fg); font-style:italic;
+    white-space:pre-wrap; word-break:break-word;
+  }
+  .excList .item .notes{margin-top:6px; padding-left:10px; border-left:2px solid var(--line)}
+  .excList .item .notes .n{
+    font-size:12px; color:var(--dim); line-height:1.6; padding:2px 0;
+  }
+  .excList .item .notes .n.user{color:var(--fg)}
+  .excList .item .notes .n.ai{color:var(--accent)}
+  .excExport{
+    border:1px solid var(--line); background:var(--card); color:var(--fg);
+    border-radius:8px; padding:7px 12px; font-size:12.5px; cursor:pointer;
+    margin-bottom:9px; width:100%;
+  }
+  .excExport:hover{border-color:var(--accent); color:var(--accent)}
+</style>
+</head>
+<body>
+
+<div id="bar">
+  <button class="ibtn" id="btnLib">☰ 书库</button>
+  <div id="titleBox">
+    <span id="bkTitle">读伴</span>
+    <span id="bkChapter"></span>
+  </div>
+  <div id="barRight">
+    <span id="pct">—</span>
+    <button class="ibtn" id="btnSearch">🔍 搜索</button>
+    <button class="ibtn" id="btnFontDec" title="字号 -">A-</button>
+    <button class="ibtn" id="btnFontInc" title="字号 +">A+</button>
+    <button class="ibtn" id="btnTheme" title="换主题">☾</button>
+  </div>
+</div>
+<div id="pbar"><i></i></div>
+<div id="view"><div id="reader"></div></div>
+
+<div id="mask"></div>
+
+<aside id="libPanel">
+  <header>
+    <b>书库</b>
+    <label class="btn primary">＋ 导入 txt<input type="file" id="fileInput" multiple accept=".txt,text/plain" hidden></label>
+    <button class="ibtn" id="btnReload" title="重新扫描书库">↻</button>
+    <div id="libTabs">
+      <button class="t on" data-tab="lib">书库</button>
+      <button class="t" data-tab="idx">索引</button>
+      <button class="t" data-tab="exc">摘抄本</button>
+    </div>
+  </header>
+  <div class="body" id="libList"></div>
+  <div class="body" id="idxList" style="display:none"></div>
+  <div class="body" id="excList" style="display:none"></div>
+</aside>
+
+<aside id="searchPanel">
+  <header>
+    <input id="q" placeholder="全书搜索…（回车）" autocomplete="off">
+    <button class="ibtn" id="btnCloseSearch">×</button>
+  </header>
+  <div class="body"><div id="hits"></div></div>
+</aside>
+
+<div id="toast"></div>
+<div id="drop">松手，我把 txt 收进书库</div>
+
+<div id="hlMenu">
+  <button class="m" data-act="line">划线</button>
+  <span class="sep"></span>
+  <button class="m" data-act="note">写批注</button>
+  <span class="sep"></span>
+  <button class="m" data-act="copy">复制</button>
+</div>
+
+<aside id="hlPanel">
+  <header>
+    <b id="hlPanelTitle">批注</b>
+    <button class="ibtn" id="btnCloseHlPanel">×</button>
+  </header>
+  <div class="qbox" id="hlPanelQuote"></div>
+  <div class="thread" id="hlPanelThread"></div>
+  <div class="inputBox" id="hlPanelInput">
+    <div class="row">
+      <textarea id="hlInput" placeholder="写两句…（回车发送，Shift+回车换行）" maxlength="600"></textarea>
+      <button class="send" id="hlSend">发送</button>
+    </div>
+    <div class="meta"><span id="hlWeight">还能写 300</span><span>≤ 300 分（约 150 个汉字）</span></div>
+  </div>
+  <div class="fullhint" id="hlFullHint" style="display:none">这条划线聊满了（最多 6 轮），换个地方继续吧</div>
+</aside>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+
+/* ---------------- 鉴权 token ----------------
+ * 后端只有在 READER_TOKEN 被设置时才校验。
+ * 打开页面时先看 URL 上有没有 ?token=xxx：有就存进 localStorage (rm_token)，
+ * 并用 history.replaceState 把地址栏里的 token 抹掉，避免留在浏览历史里。
+ * 不设 token 时整套逻辑就是 no-op，不改任何现有行为。
+ */
+const RM_TOKEN_KEY = "rm_token";
+function pickUpTokenFromUrl(){
+  try {
+    const u = new URL(location.href);
+    const t = (u.searchParams.get("token") || "").trim();
+    if (!t) return "";
+    try { localStorage.setItem(RM_TOKEN_KEY, t); } catch (e) {}
+    // 把 token 从 URL 里抹掉，地址栏与浏览器历史都不再保留
+    u.searchParams.delete("token");
+    const newUrl = u.pathname + (u.searchParams.toString() ? "?" + u.searchParams.toString() : "") + u.hash;
+    history.replaceState(history.state, "", newUrl);
+    return t;
+  } catch (e) { return ""; }
+}
+function getToken(){
+  try { return (localStorage.getItem(RM_TOKEN_KEY) || "").trim(); }
+  catch (e) { return ""; }
+}
+pickUpTokenFromUrl();
+
+/* ---- 页面级报错兜底：出错就把原因摆在屏幕底部，便于截图反馈 ---- */
+function showErr(msg){
+  let d = document.getElementById("errbar");
+  if (!d){
+    d = document.createElement("div");
+    d.id = "errbar";
+    d.style.cssText = "position:fixed;left:0;right:0;bottom:0;z-index:99;background:#b3261e;color:#fff;" +
+      "font:12px/1.7 system-ui,'Microsoft YaHei',sans-serif;padding:9px 13px;white-space:pre-wrap;" +
+      "max-height:38vh;overflow:auto;box-shadow:0 -4px 16px rgba(0,0,0,.3)";
+    document.body.appendChild(d);
+  }
+  d.textContent = "⚠ 页面出错：" + msg + "\n（把这一行截屏反馈给开发者）";
+}
+window.addEventListener("error", e => showErr((e.message || String(e.error)) +
+  "  @" + String(e.filename || "").split(/[\\/]/).pop() + ":" + (e.lineno || "?")));
+window.addEventListener("unhandledrejection", e => showErr("Promise 未捕获：" +
+  ((e.reason && (e.reason.message || e.reason)) || "unknown")));
+
+const view = $("#view"), reader = $("#reader");
+const BLOCK = 200;
+const VTOP = view.getBoundingClientRect().top;   // 固定顶栏高度，用来把 offsetTop 换算成“相对视口顶部”
+
+const state = {
+  book: null,          // {name, text, chars, progress}
+  segs: [],            // [{start,end,text,chapter}]
+  els: [],             // 段元素
+  rendered: 0,
+  currentSeg: 0,
+  query: "",
+  lastMarked: null,
+  booksDir: "",        // 由后端 /api/books 的 dir 字段填，别在前端硬写盘符
+};
+
+/* ---------------- 带鉴权的 fetch 包装 ----------------
+ * 所有调 /api/* 的请求都走这里：自动带 X-Token，401 时弹 showErr 提示。
+ * 调用方仍可正常 await r.json()。
+ */
+let _rmAuthNotified = false;
+function _notifyAuthFail(){
+  if (_rmAuthNotified) return;
+  _rmAuthNotified = true;
+  showErr("未授权：请在网址后加 ?token=你的令牌 再打开一次");
+}
+/* 连不上后端时给一句能照做的话。手机杀后台很勤，服务多半就是这么没的——
+   所以别报技术错误，直接告诉她怎么办。 */
+let _rmOfflineNotified = false;
+function _notifyOffline(){
+  if (_rmOfflineNotified) return;
+  _rmOfflineNotified = true;
+  showErr("连不上后端了——手机很可能把服务杀了。\n" +
+          "重新打开一下阅读器就能恢复（Operit 点侧边栏，电脑上双击启动脚本）；\n" +
+          "刚才这一步没成功，恢复之后请再来一次。");
+}
+async function fetchAuth(input, init){
+  init = init || {};
+  const tk = getToken();
+  const headers = Object.assign({}, init.headers || {});
+  if (tk && !headers["X-Token"] && !headers["x-token"]) headers["X-Token"] = tk;
+  let r;
+  try {
+    r = await fetch(input, Object.assign({}, init, { headers: headers }));
+    _rmOfflineNotified = false;   // 通了就复位，下次再掉还能提示
+  } catch (e) {
+    _notifyOffline();
+    throw e;
+  }
+  if (r.status === 401) _notifyAuthFail();
+  return r;
+}
+
+/* ---------------- 偏好 ---------------- */
+const pref = {
+  size: +(localStorage.getItem("r_size") || 19),
+  theme: localStorage.getItem("r_theme") || "paper",
+  col: localStorage.getItem("r_col") || "46rem",
+};
+function applyPref(){
+  document.documentElement.style.setProperty("--font-size", pref.size + "px");
+  document.documentElement.style.setProperty("--col", pref.col);
+  document.documentElement.dataset.theme = pref.theme;
+  $("#btnTheme").textContent = pref.theme === "dark" ? "☀" : "☾";
+}
+applyPref();
+
+/* ---------------- 小工具 ---------------- */
+let toastTimer = null;
+function toast(msg, ms = 2200){
+  const t = $("#toast");
+  t.textContent = msg; t.classList.add("on");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("on"), ms);
+}
+const esc = s => s.replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
+
+/* ---------------- 分段 ---------------- */
+const CHAP_RE = /^(第\s*[0-9零一二三四五六七八九十百千万两]+\s*[章节回卷篇幕]|Chapter\s+\d+|CHAPTER\s+\d+)[^\n]{0,40}$/;
+const LONG_SEG = 1200;
+
+function splitSegments(text){
+  const segs = [];
+  let pos = 0, chap = "";
+  const lines = text.split("\n");
+  for (const line of lines){
+    const lineStart = pos;
+    pos += line.length + 1;                 // +1 = 那个 \n
+    const t = line.trim();
+    if (!t) continue;
+    const lead = line.length - line.trimStart().length;
+    if (CHAP_RE.test(t)) chap = t.slice(0, 40);
+    if (t.length > LONG_SEG){
+      for (let i = 0; i < t.length; i += LONG_SEG){
+        segs.push({
+          start: lineStart + lead + i,
+          end:   lineStart + lead + Math.min(i + LONG_SEG, t.length),
+          text:  t.slice(i, i + LONG_SEG),
+          chapter: chap,
+        });
+      }
+    } else {
+      segs.push({ start: lineStart + lead, end: lineStart + lead + t.length, text: t, chapter: chap });
+    }
+  }
+  return segs;
+}
+
+/* ---------------- 渲染 ---------------- */
+function renderMore(count = BLOCK){
+  if (!state.book || state.rendered >= state.segs.length) return;
+  const end = Math.min(state.segs.length, state.rendered + count);
+  const frag = document.createDocumentFragment();
+  for (let i = state.rendered; i < end; i++){
+    const s = state.segs[i];
+    const p = document.createElement("p");
+    p.className = "seg" + (s.chapter === s.text ? " chap" : "");
+    p.dataset.i = i;
+    p.textContent = s.text;
+    state.els[i] = p;
+    frag.appendChild(p);
+  }
+  reader.appendChild(frag);
+  state.rendered = end;
+}
+function ensureRendered(idx){
+  let guard = 0;
+  while (state.rendered <= idx && state.rendered < state.segs.length && guard++ < 500) renderMore();
+}
+function segIndexAtOffset(off){
+  const segs = state.segs;
+  let lo = 0, hi = segs.length - 1, ans = 0;
+  while (lo <= hi){
+    const m = (lo + hi) >> 1;
+    if (segs[m].start <= off){ ans = m; lo = m + 1; } else hi = m - 1;
+  }
+  return ans;
+}
+function visibleSeg(top){
+  let lo = 0, hi = state.rendered - 1, ans = 0;
+  while (lo <= hi){
+    const m = (lo + hi) >> 1;
+    const el = state.els[m];
+    if (!el){ hi = m - 1; continue; }
+    if (el.offsetTop - VTOP <= top + 4){ ans = m; lo = m + 1; } else hi = m - 1;
+  }
+  return ans;
+}
+
+/* ---------------- 进度 ---------------- */
+let saveTimer = null;
+function payload(){
+  const seg = state.segs[state.currentSeg] || { start: 0, chapter: "" };
+  const chars = state.book ? state.book.chars : 0;
+  return {
+    name: state.book.name,
+    offset: seg.start,
+    chars,
+    percent: chars ? seg.start / chars : 0,
+    chapter: seg.chapter || "",
+    anchor: (state.book.text.slice(seg.start, seg.start + 40) || "").replace(/\s+/g, " "),
+  };
+}
+function scheduleSave(){
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveNow, 1200);
+}
+function saveNow(){
+  if (!state.book) return;
+  fetchAuth("/api/progress", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload()),
+  }).catch(() => {});
+}
+window.addEventListener("beforeunload", () => {
+  if (!state.book) return;
+  try {
+    // sendBeacon 无法自定义请求头；只能把 token 拼到 URL 上做后备
+    const tk = getToken();
+    const url = tk ? "/api/progress?token=" + encodeURIComponent(tk) : "/api/progress";
+    navigator.sendBeacon(url,
+      new Blob([JSON.stringify(payload())], { type: "application/json" }));
+  } catch (e) {}
+});
+
+function updateBar(){
+  const seg = state.segs[state.currentSeg];
+  $("#bkChapter").textContent = (seg && seg.chapter && seg.chapter !== seg.text) ? "· " + seg.chapter : "";
+  const chars = state.book ? state.book.chars : 0;
+  const pct = chars && seg ? seg.start / chars : 0;
+  $("#pct").textContent = chars ? (pct * 100).toFixed(1) + "%　" + seg.start + "/" + chars : "—";
+  $("#pbar i").style.width = (pct * 100).toFixed(2) + "%";
+}
+
+let ticking = false;
+view.addEventListener("scroll", () => {
+  if (ticking) return;
+  ticking = true;
+  requestAnimationFrame(() => {
+    ticking = false;
+    if (!state.book) return;
+    const idx = visibleSeg(view.scrollTop);
+    if (idx !== state.currentSeg){ state.currentSeg = idx; updateBar(); }
+    if (view.scrollTop + view.clientHeight > view.scrollHeight - 1400) renderMore();
+    scheduleSave();
+  });
+}, { passive: true });
+
+/* ---------------- 打开书 ---------------- */
+async function loadBooks(){
+  const r = await fetchAuth("/api/books");
+  const j = await r.json();
+  state.booksDir = j.dir || "";
+  const list = $("#libList");
+  if (!j.books || !j.books.length){
+    list.innerHTML = '<div class="hint">书库还是空的。<br>点上面的「＋ 导入 txt」，或者直接把 txt 拖进这个窗口。</div>';
+    return j.books || [];
+  }
+  list.innerHTML = "";
+  for (const b of j.books){
+    const d = document.createElement("div");
+    d.className = "book";
+    const pctv = Math.round((b.percent || 0) * 1000) / 10;
+    d.innerHTML =
+      '<div class="n">' + esc(b.title) + '</div>' +
+      '<div class="m">' + (b.chars || 0).toLocaleString() + ' 字　' +
+        (b.read_at ? '读到 ' + pctv + '%　' + esc(b.chapter || '') : '还没开读') + '</div>' +
+      '<div class="bar"><i style="width:' + pctv + '%"></i></div>' +
+      '<button class="del" title="从书库删掉">×</button>';
+    d.addEventListener("click", e => {
+      if (e.target.classList.contains("del")) return;
+      openBook(b.name);
+    });
+    d.querySelector(".del").addEventListener("click", async e => {
+      e.stopPropagation();
+      if (!confirm("把《" + b.title + "》从书库删掉？（连带阅读进度）")) return;
+      const rr = await fetchAuth("/api/delete?name=" + encodeURIComponent(b.name), { method: "POST" });
+      const jj = await rr.json();
+      toast(jj.ok ? "已删除" : (jj.error || "删除失败"));
+      if (state.book && state.book.name === b.name){ state.book = null; showEmpty(); }
+      loadBooks();
+    });
+    list.appendChild(d);
+  }
+  return j.books;
+}
+
+async function openBook(name){
+  toast("打开中…", 900);
+  const r = await fetchAuth("/api/book?name=" + encodeURIComponent(name));
+  const j = await r.json();
+  if (!j.ok){ toast(j.error || "打不开"); return; }
+  state.book = j;
+  state.segs = splitSegments(j.text);
+  state.els = []; state.rendered = 0; state.currentSeg = 0;
+  reader.innerHTML = "";
+  $("#bkTitle").textContent = j.name.replace(/\.txt$/i, "");
+  renderMore(300);
+  const off = (j.progress && j.progress.offset) || 0;
+  if (off > 0){
+    const idx = segIndexAtOffset(off);
+    ensureRendered(idx + 2);
+    const el = state.els[idx];
+    if (el) view.scrollTop = Math.max(0, el.offsetTop - VTOP - 10);
+    state.currentSeg = idx;
+    toast("接着上次读：第 " + (idx + 1) + " 段", 1600);
+  } else {
+    view.scrollTop = 0;
+  }
+  updateBar();
+  // 打开新书：复位 tab、加载已有划线
+  if (typeof switchLibTab === "function") switchLibTab("lib");
+  loadHighlights(j.name);
+  closePanels();
+}
+
+function showEmpty(){
+  $("#bkTitle").textContent = "读伴";
+  $("#bkChapter").textContent = "";
+  $("#pct").textContent = "—";
+  $("#pbar i").style.width = "0";
+  reader.innerHTML =
+    '<div id="empty"><h1>读伴 · v1.0</h1>' +
+    '<p>先把 txt 放进书库：点左上「☰ 书库」→「＋ 导入 txt」，或者直接把文件拖进窗口。</p>' +
+    '<p>书库目录：<code>' + esc(state.booksDir || "书库/") + '</code><br>' +
+    '进度正本：<code>data/progress.json</code></p></div>';
+}
+
+/* ---------------- 搜索 ---------------- */
+function runSearch(q){
+  const hits = $("#hits");
+  if (!state.book){ hits.innerHTML = '<div class="hint">先打开一本书再搜。</div>'; return; }
+  if (!q){ hits.innerHTML = '<div class="hint">输入关键词，回车搜全书。</div>'; return; }
+  const text = state.book.text, lq = q.toLowerCase(), low = text.toLowerCase();
+  const out = []; let from = 0;
+  const MAX = 800;
+  while (out.length < MAX){
+    const i = low.indexOf(lq, from);
+    if (i < 0) break;
+    out.push({
+      offset: i,
+      pre: text.slice(Math.max(0, i - 18), i),
+      hit: text.slice(i, i + q.length),
+      post: text.slice(i + q.length, i + q.length + 28),
+    });
+    from = i + Math.max(1, q.length);
+  }
+  state.query = q;
+  if (!out.length){ hits.innerHTML = '<div class="hint">「' + esc(q) + '」没搜到。</div>'; return; }
+  hits.innerHTML = '<div class="hint">共 ' + out.length + (out.length >= MAX ? "+（只显示前 " + MAX + "）" : "") + ' 处</div>';
+  const frag = document.createDocumentFragment();
+  out.forEach((h, n) => {
+    const d = document.createElement("div");
+    d.className = "hit";
+    d.innerHTML = '<span class="pre">…' + esc(h.pre) + '</span><b>' + esc(h.hit) +
+                  '</b><span class="post">' + esc(h.post) + '…</span>';
+    d.addEventListener("click", () => jumpTo(h.offset, q));
+    frag.appendChild(d);
+  });
+  hits.appendChild(frag);
+}
+
+function clearMark(){
+  if (state.lastMarked && state.lastMarked.isConnected){
+    const i = +state.lastMarked.dataset.i;
+    state.lastMarked.textContent = state.segs[i].text;
+  }
+  state.lastMarked = null;
+}
+
+function jumpTo(offset, q){
+  const idx = segIndexAtOffset(offset);
+  ensureRendered(idx + 2);
+  const el = state.els[idx];
+  if (!el) return;
+  clearMark();
+  const s = state.segs[idx];
+  const local = Math.max(0, offset - s.start);
+  if (q && local < s.text.length){
+    const before = s.text.slice(0, local), mid = s.text.slice(local, local + q.length);
+    const after = s.text.slice(local + q.length);
+    el.innerHTML = esc(before) + '<mark class="cur">' + esc(mid) + '</mark>' + esc(after);
+    state.lastMarked = el;
+  }
+  view.scrollTop = Math.max(0, el.offsetTop - VTOP - 90);
+  state.currentSeg = idx; updateBar(); scheduleSave();
+  if (window.innerWidth < 900) closePanels();
+}
+
+/* ---------------- 面板 ---------------- */
+function openLib(){ $("#libPanel").classList.add("on"); $("#mask").classList.add("on"); loadBooks(); }
+function openSearch(){
+  $("#searchPanel").classList.add("on"); $("#mask").classList.add("on");
+  if (!state.book){ $("#hits").innerHTML = '<div class="hint">先打开一本书再搜。</div>'; }
+  setTimeout(() => $("#q").focus(), 120);
+}
+function closePanels(){
+  $("#libPanel").classList.remove("on");
+  $("#searchPanel").classList.remove("on");
+  $("#mask").classList.remove("on");
+}
+
+/* ---------------- 导入 ---------------- */
+async function importFiles(files){
+  const arr = [...files].filter(f => /\.txt$/i.test(f.name) || f.type.startsWith("text/"));
+  if (!arr.length){ toast("只收 txt 文件"); return; }
+  let ok = 0;
+  for (const f of arr){
+    toast("导入 " + f.name + " …", 6000);
+    try {
+      const r = await fetchAuth("/api/import?name=" + encodeURIComponent(f.name), { method: "POST", body: f });
+      const j = await r.json();
+      if (j.ok) ok++; else toast((j.error || "导入失败") + "：" + f.name, 3500);
+    } catch (e){ toast("导入失败（后端多半掉了）：" + f.name, 4000); }
+  }
+  toast("导入完成：" + ok + " / " + arr.length + " 本");
+  const books = await loadBooks();
+  if (!state.book && books.length) openBook(books[0].name);
+}
+
+/* ---------------- 事件 ---------------- */
+$("#btnLib").addEventListener("click", openLib);
+$("#btnSearch").addEventListener("click", openSearch);
+$("#btnCloseSearch").addEventListener("click", closePanels);
+$("#mask").addEventListener("click", closePanels);
+$("#btnReload").addEventListener("click", () => { loadBooks().then(() => toast("书库已刷新")); });
+$("#fileInput").addEventListener("change", e => { importFiles(e.target.files); e.target.value = ""; });
+$("#q").addEventListener("keydown", e => { if (e.key === "Enter") runSearch($("#q").value.trim()); });
+$("#btnFontInc").addEventListener("click", () => { pref.size = Math.min(34, pref.size + 1); localStorage.setItem("r_size", pref.size); applyPref(); });
+$("#btnFontDec").addEventListener("click", () => { pref.size = Math.max(13, pref.size - 1); localStorage.setItem("r_size", pref.size); applyPref(); });
+$("#btnTheme").addEventListener("click", () => {
+  pref.theme = pref.theme === "dark" ? "paper" : "dark";
+  localStorage.setItem("r_theme", pref.theme); applyPref();
+});
+
+document.addEventListener("keydown", e => {
+  const tag = (e.target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea"){
+    if (e.key === "Escape") closePanels();
+    return;
+  }
+  if (e.key === "Escape"){ closePanels(); clearMark(); return; }
+  if (e.key === "/"){ e.preventDefault(); openSearch(); return; }
+  if (!state.book) return;
+  const page = view.clientHeight * 0.92;
+  if (e.key === " " || e.key === "PageDown" || e.key === "j"){
+    e.preventDefault(); view.scrollBy({ top: page, behavior: "smooth" });
+  } else if (e.key === "PageUp" || e.key === "k"){
+    e.preventDefault(); view.scrollBy({ top: -page, behavior: "smooth" });
+  } else if (e.key === "Home"){ view.scrollTo({ top: 0 }); }
+});
+
+let dragDepth = 0;
+window.addEventListener("dragenter", e => { e.preventDefault(); dragDepth++; $("#drop").classList.add("on"); });
+window.addEventListener("dragover", e => e.preventDefault());
+window.addEventListener("dragleave", e => { if (--dragDepth <= 0){ dragDepth = 0; $("#drop").classList.remove("on"); } });
+window.addEventListener("drop", e => {
+  e.preventDefault(); dragDepth = 0; $("#drop").classList.remove("on");
+  if (e.dataTransfer && e.dataTransfer.files.length) importFiles(e.dataTransfer.files);
+});
+
+/* ---------------- 划线 / 批注 / 索引 / 摘抄本 ---------------- */
+/* 统一规则（与后端 unicodedata.east_asian_width W/F 对齐）：
+   CJK / 全角字符算 2 分，其它算 1 分；上限 300 分。
+   JS 没内置 East_Asian_Width 属性，下面用 Unicode 范围近似覆盖（够用：
+   CJK 统一汉字+部首、CJK 符号与标点、日韩假名、韩文、全角 ASCII/标点）。
+   任何拿不准的字都按"算 1 分"兜底——比"算 2 分"宽松，但绝不超过后端卡。 */
+const EA_WIDE_RE = /(?:[\u1100-\u115F\u2E80-\u303E\u3041-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uA000-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6])/;
+function isWideChar(ch){
+  return EA_WIDE_RE.test(ch);
+}
+function weightOf(s){
+  if (!s) return 0;
+  let w = 0;
+  for (let i = 0; i < s.length; i++){
+    const cp = s.charCodeAt(i);
+    if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < s.length){
+      // 代理对：取完整码点再判断
+      const next = s.charCodeAt(i + 1);
+      const full = (cp - 0xD800) * 0x400 + (next - 0xDC00) + 0x10000;
+      w += (full >= 0x1F000 && full <= 0x1FFFF) ? 1 : 2; // 表情符号按 1
+      i++;
+      continue;
+    }
+    w += isWideChar(s[i]) ? 2 : 1;
+  }
+  return w;
+}
+
+/* 当前打开的书本对应的划线缓存：{[id]: highlight} */
+const notesCache = { name: "", list: [] };
+
+/* ---- 选中 → 浮动菜单 ----
+ * selectionchange 触发；选区中心水平定位；距底 < 140px 时翻到上方。 */
+let hlMenu = null, hlSel = null;
+function ensureHlMenu(){
+  if (hlMenu) return hlMenu;
+  hlMenu = $("#hlMenu");
+  hlMenu.addEventListener("mousedown", e => e.preventDefault()); // 点击不让选区丢
+  hlMenu.querySelectorAll(".m").forEach(btn => {
+    btn.addEventListener("click", e => {
+      const act = btn.dataset.act;
+      if (!hlSel) return;
+      if (act === "line") doHighlight("line");
+      else if (act === "note") doHighlight("note");
+      else if (act === "copy") doCopy();
+      hideHlMenu();
+    });
+  });
+  return hlMenu;
+}
+function hideHlMenu(){ if (hlMenu){ hlMenu.classList.remove("on"); } hlSel = null; }
+function showHlMenu(){
+  if (!hlSel || !state.book){ hideHlMenu(); return; }
+  const m = ensureHlMenu();
+  const rect = hlSel.rect;
+  m.classList.add("on");
+  // 水平居中
+  const mw = m.offsetWidth, mh = m.offsetHeight;
+  let x = rect.left + rect.width / 2 - mw / 2;
+  // 边界
+  x = Math.max(8, Math.min(window.innerWidth - mw - 8, x));
+  // 默认在选区下方
+  let y = rect.bottom + 8;
+  if (y + mh > window.innerHeight - 8){
+    // 翻到选区上方
+    y = rect.top - mh - 8;
+    if (y < 8) y = Math.max(8, window.innerHeight - mh - 8);
+  }
+  m.style.left = x + "px";
+  m.style.top = y + "px";
+}
+function onSelectionChange(){
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount){ hideHlMenu(); return; }
+  const range = sel.getRangeAt(0);
+  const r = range.getBoundingClientRect();
+  // 只在阅读区内才弹
+  const readerEl = $("#reader");
+  const rb = readerEl.getBoundingClientRect();
+  if (r.bottom < rb.top || r.top > rb.bottom){ hideHlMenu(); return; }
+  const info = selectionInfo(range);
+  if (!info || info.text.length < 1){ hideHlMenu(); return; }
+  hlSel = { range: range.cloneRange(), rect: r, info: info };
+  showHlMenu();
+}
+document.addEventListener("selectionchange", onSelectionChange);
+document.addEventListener("scroll", () => hideHlMenu(), { passive: true, capture: true });
+
+/* ---- 选区 → offset/text ----
+ * 段元素 className = "seg ..."，dataset.i = 段索引。
+ * 跨段选区：起点在 segA（段内 localA），终点在 segB（段内 localB），
+ * 中间段（segA+1 .. segB-1）整段被选；text = 拼接。 */
+function segElFromNode(node){
+  while (node && node !== document.body){
+    if (node.nodeType === 1 && node.classList && node.classList.contains("seg")) return node;
+    node = node.parentNode;
+  }
+  return null;
+}
+function segIndexFromNode(node){
+  const el = segElFromNode(node);
+  return el ? (+el.dataset.i | 0) : -1;
+}
+function segLocalOffset(segIdx, node, nodeOffset){
+  // 计算 nodeOffset 在该段内的字符偏移
+  const segEl = state.els[segIdx];
+  if (!segEl) return 0;
+  if (node === segEl) return Math.max(0, Math.min(segEl.textContent.length, nodeOffset));
+  // 文本节点：在 segEl 内
+  let walked = 0, remaining = nodeOffset;
+  for (const tn of segEl.childNodes){
+    if (tn === node){
+      return walked + remaining;
+    }
+    walked += (tn.textContent || "").length;
+  }
+  return walked;
+}
+function selectionInfo(range){
+  if (!range) return null;
+  const startSegIdx = segIndexFromNode(range.startContainer);
+  const endSegIdx = segIndexFromNode(range.endContainer);
+  if (startSegIdx < 0 || endSegIdx < 0) return null;
+  if (endSegIdx < startSegIdx) return null;
+  const startSeg = state.segs[startSegIdx];
+  const endSeg = state.segs[endSegIdx];
+  if (!startSeg || !endSeg) return null;
+  const startLocal = segLocalOffset(startSegIdx, range.startContainer, range.startOffset);
+  const endLocal = segLocalOffset(endSegIdx, range.endContainer, range.endOffset);
+  const start = startSeg.start + startLocal;
+  const end = endSeg.start + endLocal;
+  // 拼 text
+  let text = "";
+  if (startSegIdx === endSegIdx){
+    text = startSeg.text.slice(startLocal, endLocal);
+  } else {
+    text = startSeg.text.slice(startLocal);
+    for (let i = startSegIdx + 1; i < endSegIdx; i++){
+      text += "\n" + (state.segs[i].text || "");
+    }
+    text += "\n" + endSeg.text.slice(0, endLocal);
+  }
+  return { start, end, text, startSegIdx, endSegIdx, startLocal, endLocal };
+}
+
+/* ---- 划线 ---- */
+async function doHighlight(kind){
+  if (!hlSel || !state.book) return;
+  const info = hlSel.info;
+  if (!info) return;
+  // 校验：start/end 在书文本长度内、长度 1~4000 分
+  if (info.end <= info.start) return;
+  if (info.end > state.book.text.length) return;
+  const chapter = (state.segs[info.startSegIdx].chapter) || "";
+  // 先发请求（POST /api/notes/highlight）——服务端返回 id；
+  // 本地同时包裹（乐观更新）；失败回滚。
+  const style = "line";
+  const body = {
+    name: state.book.name, start: info.start, end: info.end,
+    text: info.text.slice(0, 4000), style, chapter
+  };
+  let serverId = null, markGroup = "g_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
+  wrapSelectionAsMark(hlSel.range, style, markGroup);
+  window.getSelection().removeAllRanges();
+  try {
+    const r = await fetchAuth("/api/notes/highlight", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (j.ok && j.id){
+      serverId = j.id;
+      // 把 markGroup 改写到 server id，方便点开
+      document.querySelectorAll('mark[data-hl-group="' + markGroup + '"]').forEach(m => {
+        m.dataset.hlId = serverId;
+        m.style.cursor = "pointer";
+      });
+      // 加进 cache
+      notesCache.list.push({
+        id: serverId, start: info.start, end: info.end, text: info.text,
+        style, chapter, thread: [],
+      });
+      if (kind === "note"){
+        // 直接弹批注面板
+        const h = notesCache.list[notesCache.list.length - 1];
+        openHlPanel(h);
+      } else {
+        toast("已划线");
+      }
+    } else {
+      toast("划线失败：" + (j.error || "未知错误"));
+      unwrapGroup(markGroup);
+    }
+  } catch (e){
+    toast("划线请求失败");
+    unwrapGroup(markGroup);
+  }
+}
+async function doCopy(){
+  if (!hlSel) return;
+  const t = hlSel.info.text || "";
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(t);
+    } else {
+      // 兜底：选区还在
+      document.execCommand && document.execCommand("copy");
+    }
+    toast("已复制");
+  } catch (e){ toast("复制失败"); }
+  window.getSelection().removeAllRanges();
+}
+
+/* ---- TreeWalker 跨段包装 ----
+ * 选区可能跨越多个 mark / 元素；用 TreeWalker 拆成多段 mark，用 data-hl-group 关联。 */
+function wrapSelectionAsMark(range, style, groupId){
+  if (!range || range.collapsed) return;
+  const readerEl = $("#reader");
+  // 限定在 reader 内
+  if (!readerEl.contains(range.commonAncestorContainer)) return;
+  const walker = document.createTreeWalker(
+    readerEl,
+    NodeFilter.SHOW_TEXT,
+    {
+      acceptNode(n){
+        if (!n.nodeValue || n.nodeValue.length === 0) return NodeFilter.FILTER_REJECT;
+        // 必须在选区内
+        if (!range.intersectsNode(n)) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    }
+  );
+  const texts = [];
+  let n;
+  while ((n = walker.nextNode())) texts.push(n);
+  if (!texts.length) return;
+  // 对每个文本节点：算它内部的 start/end offset，拆出 Range，包裹
+  for (const tn of texts){
+    let from = 0, to = tn.nodeValue.length;
+    if (tn === range.startContainer) from = Math.max(0, range.startOffset);
+    if (tn === range.endContainer)   to   = Math.min(tn.nodeValue.length, range.endOffset);
+    if (to <= from) continue;
+    try {
+      const r = document.createRange();
+      r.setStart(tn, from);
+      r.setEnd(tn, to);
+      const mark = document.createElement("mark");
+      mark.className = "seg-mark " + (style || "line");
+      mark.dataset.hlGroup = groupId;
+      r.surroundContents(mark);
+    } catch (e){
+      // surroundContents 失败（跨标签到不能拆的节点）：退化为 splitText + 包外层
+      try {
+        if (from > 0) tn.splitText(from);
+        const mid = (to > from) ? tn.nextSibling : null;
+        let target = mid || tn;
+        let endText = null;
+        if (to - from < target.nodeValue.length){
+          endText = target.splitText(to - from);
+        }
+        const mark = document.createElement("mark");
+        mark.className = "seg-mark " + (style || "line");
+        mark.dataset.hlGroup = groupId;
+        const parent = target.parentNode;
+        while (target.firstChild) mark.appendChild(target.firstChild);
+        parent.replaceChild(mark, target);
+      } catch (e2){ /* 实在包不上就跳过——不会把原选区搞坏 */ }
+    }
+  }
+}
+function unwrapGroup(groupId){
+  document.querySelectorAll('mark[data-hl-group="' + groupId + '"]').forEach(m => {
+    const p = m.parentNode;
+    while (m.firstChild) p.insertBefore(m.firstChild, m);
+    p.removeChild(m);
+    p.normalize();
+  });
+}
+
+/* ---- 已有划线渲染 ---- */
+async function loadHighlights(name){
+  if (!name){ notesCache.list = []; return; }
+  if (notesCache.name !== name){
+    notesCache.name = name;
+    notesCache.list = [];
+  }
+  try {
+    const r = await fetchAuth("/api/notes?name=" + encodeURIComponent(name));
+    if (!r.ok){ return; }
+    const j = await r.json();
+    // 拉回时用户可能已经切到别的书——只接受当前书的
+    if (!state.book || state.book.name !== name){ return; }
+    notesCache.list = (j && j.highlights) || [];
+    renderHighlightsIntoDOM();
+    // 拉回后若抽屉正好停在 idx/exc，立刻刷新一次
+    if (libTab === "idx") renderIndex();
+    else if (libTab === "exc") renderExcerpt();
+  } catch (e){ /* 失败就当没划线，绝不抛错 */ }
+}
+function renderHighlightsIntoDOM(){
+  if (!state.book || !state.segs.length) return;
+  // 把所有 mark 拆掉（恢复到纯文本）
+  for (const el of state.els){
+    if (!el) continue;
+    const marks = el.querySelectorAll("mark[data-hl-id]");
+    if (!marks.length) continue;
+    for (const m of marks){
+      const p = m.parentNode;
+      while (m.firstChild) p.insertBefore(m.firstChild, m);
+      p.removeChild(m);
+    }
+    el.normalize();
+  }
+  // 按段分组 highlights（同一段可能多条）
+  const bySeg = new Map();
+  for (const h of notesCache.list){
+    if (!h || !h.text) continue;
+    const segIdx = segIndexAtOffset(h.start || 0);
+    if (!bySeg.has(segIdx)) bySeg.set(segIdx, []);
+    bySeg.get(segIdx).push(h);
+  }
+  // 逐段重建（一次性把多条 mark 拼好）
+  for (const [segIdx, hs] of bySeg){
+    ensureRendered(segIdx + 1);
+    const el = state.els[segIdx];
+    const seg = state.segs[segIdx];
+    if (!el || !seg) continue;
+    // 在段内找到每条 h 的精确字符偏移（都失败就保留该段不动）
+    const cuts = [];
+    for (const h of hs){
+      const local0 = Math.max(0, (h.start || 0) - seg.start);
+      let at = -1;
+      if (seg.text.substr(local0, h.text.length) === h.text) at = local0;
+      else at = seg.text.indexOf(h.text);
+      if (at < 0) continue; // 抗漂移：找不到就跳过
+      cuts.push({ at, len: h.text.length, h });
+    }
+    if (!cuts.length) continue;
+    // 按 at 排序，重叠/相接的合并
+    cuts.sort((a, b) => a.at - b.at);
+    const merged = [];
+    for (const c of cuts){
+      const last = merged[merged.length - 1];
+      if (last && c.at <= last.at + last.len){
+        // 重叠/相接：扩到 max(last.len, c.end - last.at)
+        const cend = c.at + c.len;
+        const lastEnd = last.at + last.len;
+        if (cend > lastEnd){
+          last.len = cend - last.at;
+          last.parts = last.parts || [last.h];
+          last.parts.push(c.h);
+        } else {
+          last.parts = last.parts || [last.h];
+          last.parts.push(c.h);
+        }
+        continue;
+      }
+      merged.push(Object.assign({}, c, { parts: [c.h] }));
+    }
+    // 拼 innerHTML
+    let html = "";
+    let cur = 0;
+    for (const m of merged){
+      if (m.at > cur) html += esc(seg.text.slice(cur, m.at));
+      // 多条 hlId 用空格分隔放 data-hl-ids
+      const ids = m.parts.map(p => p.id).filter(Boolean);
+      const style = m.parts[0].style || "line";
+      html += '<mark class="' + esc(style) + '" data-hl-id="' + esc(ids[0] || "") + '"' +
+              (ids.length > 1 ? ' data-hl-ids="' + esc(ids.join(" ")) + '"' : '') + '>' +
+              esc(seg.text.slice(m.at, m.at + m.len)) + '</mark>';
+      cur = m.at + m.len;
+    }
+    if (cur < seg.text.length) html += esc(seg.text.slice(cur));
+    el.innerHTML = html;
+  }
+  // 所有 mark 都加上 cursor（click 用事件委托，一次性绑在 reader 上）
+  reader.querySelectorAll("mark[data-hl-id]").forEach(m => {
+    m.style.cursor = "pointer";
+  });
+}
+
+/* ---- 点 mark → 批注面板 ----
+ * 用事件委托挂到 reader 上，避免每次 renderHighlightsIntoDOM 重复挂 listener。 */
+function onMarkClick(e){
+  const m = e.target.closest("mark[data-hl-id]");
+  if (!m) return;
+  const id = m.dataset.hlId;
+  const h = notesCache.list.find(x => x.id === id);
+  if (!h) return;
+  e.preventDefault();
+  e.stopPropagation();
+  hideHlMenu();
+  openHlPanel(h);
+}
+reader.addEventListener("click", onMarkClick);
+function openHlPanel(h){
+  $("#hlPanelQuote").textContent = h.text || "";
+  const thread = h.thread || [];
+  renderHlThread(thread);
+  $("#hlPanelInput").style.display = "";
+  $("#hlFullHint").style.display = "none";
+  $("#hlInput").disabled = false;
+  $("#hlSend").disabled = false;
+  $("#hlInput").value = "";
+  updateHlWeight();
+  $("#hlPanel").dataset.hlId = h.id;
+  $("#hlPanelTitle").textContent = (h.chapter ? h.chapter + " · " : "") + "批注";
+  $("#hlPanel").classList.add("on");
+  setTimeout(() => $("#hlInput").focus(), 60);
+  if (thread.length >= 12){
+    $("#hlInput").disabled = true;
+    $("#hlSend").disabled = true;
+    $("#hlPanelInput").style.display = "none";
+    $("#hlFullHint").style.display = "";
+  }
+}
+function closeHlPanel(){
+  $("#hlPanel").classList.remove("on");
+  delete $("#hlPanel").dataset.hlId;
+}
+function renderHlThread(thread){
+  const box = $("#hlPanelThread");
+  box.innerHTML = "";
+  if (!thread.length){
+    box.innerHTML = '<div class="empty">还没有批注——在上面写两句吧。</div>';
+    return;
+  }
+  for (const c of thread){
+    const d = document.createElement("div");
+    d.className = "cm";
+    const who = c.who || "user";
+    const whoLabel = who === "ai"
+      ? ((c.name || "ai") + " 说")
+      : "你说";
+    const at = c.at || "";
+    d.innerHTML = '<div class="who ' + who + '">' + esc(whoLabel) +
+                  (c.at ? '<span class="at">' + esc(c.at) + '</span>' : '') + '</div>' +
+                  '<div class="tx">' + esc(c.text || "") + '</div>';
+    box.appendChild(d);
+  }
+  box.scrollTop = box.scrollHeight;
+}
+function updateHlWeight(){
+  const w = weightOf($("#hlInput").value);
+  const left = 300 - w;
+  $("#hlWeight").textContent = "还能写 " + Math.max(0, left);
+  $("#hlWeight").style.color = left < 0 ? "#b3261e" : (left < 30 ? "#c97a1f" : "var(--dim)");
+}
+$("#hlInput").addEventListener("input", updateHlWeight);
+$("#hlInput").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); submitComment(); }
+  else if (e.key === "Escape"){ closeHlPanel(); }
+});
+$("#hlSend").addEventListener("click", submitComment);
+$("#btnCloseHlPanel").addEventListener("click", closeHlPanel);
+
+async function submitComment(){
+  const hid = $("#hlPanel").dataset.hlId;
+  if (!hid) return;
+  const text = $("#hlInput").value.trim();
+  if (!text){ toast("批注不能为空"); return; }
+  const w = weightOf(text);
+  if (w > 300){
+    toast("批注太长：约 " + Math.ceil(w/2) + " 个汉字 / 上限 150");
+    return;
+  }
+  $("#hlSend").disabled = true;
+  try {
+    const r = await fetchAuth("/api/notes/comment", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: state.book.name, id: hid, who: "user", text }),
+    });
+    const j = await r.json();
+    if (j.ok){
+      const h = notesCache.list.find(x => x.id === hid);
+      if (h){
+        (h.thread = h.thread || []).push({ who: "user", text, at: j.at || new Date().toISOString() });
+        renderHlThread(h.thread);
+        if (h.thread.length >= 12){
+          $("#hlInput").disabled = true;
+          $("#hlSend").disabled = true;
+          $("#hlPanelInput").style.display = "none";
+          $("#hlFullHint").style.display = "";
+        }
+      }
+      $("#hlInput").value = "";
+      updateHlWeight();
+    } else {
+      toast(j.error || "发送失败");
+    }
+  } catch (e){ toast("批注没存上——后端多半掉了，重新打开阅读器再发一次", 4000); }
+  $("#hlSend").disabled = false;
+  $("#hlInput").focus();
+}
+
+/* ---- 索引 / 摘抄本 tabs ---- */
+let libTab = "lib";
+$("#libTabs").addEventListener("click", e => {
+  const t = e.target.closest(".t");
+  if (!t) return;
+  switchLibTab(t.dataset.tab);
+});
+function switchLibTab(tab){
+  libTab = tab;
+  $("#libTabs").querySelectorAll(".t").forEach(b => {
+    b.classList.toggle("on", b.dataset.tab === tab);
+  });
+  $("#libList").style.display = tab === "lib" ? "" : "none";
+  $("#idxList").style.display = tab === "idx" ? "" : "none";
+  $("#excList").style.display = tab === "exc" ? "" : "none";
+  if (tab === "idx") renderIndex();
+  else if (tab === "exc") renderExcerpt();
+}
+function renderIndex(){
+  const out = $("#idxList");
+  out.innerHTML = "";
+  if (!state.book){
+    out.innerHTML = '<div class="empty">先打开一本书。</div>';
+    return;
+  }
+  if (!notesCache.list.length){
+    out.innerHTML = '<div class="empty">这本书还没有划线。<br>在书页里选一段文字试试。</div>';
+    return;
+  }
+  const sorted = notesCache.list.slice().sort((a, b) => (a.start || 0) - (b.start || 0));
+  const wrap = document.createElement("div");
+  wrap.className = "idxList";
+  for (const h of sorted){
+    const q = (h.text || "").trim();
+    const preview = q.length > 90 ? q.slice(0, 90) + "…" : q;
+    const cnt = (h.thread || []).length;
+    const div = document.createElement("div");
+    div.className = "item";
+    div.innerHTML = '<div class="q">' + esc(preview) + '</div>' +
+      '<div class="meta"><span>' + (h.chapter ? esc(h.chapter) + " · " : "") + cnt + ' 条批注</span>' +
+      '<button data-jump="' + esc(h.id) + '">跳回原文</button></div>';
+    div.querySelector("button").addEventListener("click", () => jumpToHighlight(h));
+    wrap.appendChild(div);
+  }
+  out.appendChild(wrap);
+}
+function renderExcerpt(){
+  const out = $("#excList");
+  out.innerHTML = "";
+  if (!state.book){
+    out.innerHTML = '<div class="empty">先打开一本书。</div>';
+    return;
+  }
+  // 顶部导出按钮
+  const exp = document.createElement("button");
+  exp.className = "excExport";
+  exp.textContent = "↓ 导出 markdown（" + notesCache.list.length + " 条）";
+  exp.disabled = !notesCache.list.length;
+  exp.addEventListener("click", async () => {
+    if (!state.book) return;
+    exp.disabled = true; exp.textContent = "导出中…";
+    try {
+      const r = await fetchAuth("/api/notes/export?name=" + encodeURIComponent(state.book.name));
+      if (!r.ok){ toast("导出失败：" + r.status); return; }
+      const md = await r.text();
+      const fname = state.book.name.replace(/\.txt$/i, "") + "·摘抄本.md";
+      const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = fname;
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);
+      toast("已下载 " + fname);
+    } catch (e){ toast("导出失败——后端多半掉了，重新打开阅读器再导出", 4000); }
+    exp.disabled = false;
+    exp.textContent = "↓ 导出 markdown（" + notesCache.list.length + " 条）";
+  });
+  out.appendChild(exp);
+
+  if (!notesCache.list.length){
+    const e = document.createElement("div");
+    e.className = "empty";
+    e.textContent = "还没有摘抄。";
+    out.appendChild(e);
+    return;
+  }
+  const sorted = notesCache.list.slice().sort((a, b) => (a.start || 0) - (b.start || 0));
+  const wrap = document.createElement("div");
+  wrap.className = "excList";
+  for (const h of sorted){
+    const div = document.createElement("div");
+    div.className = "item";
+    const q = (h.text || "").trim();
+    let notesHtml = "";
+    for (const c of (h.thread || [])){
+      const who = c.who || "user";
+      const whoLabel = who === "ai"
+        ? ((c.name || "ai") + "：")
+        : "你：";
+      notesHtml += '<div class="n ' + who + '">' + esc(whoLabel) + esc(c.text || "") + '</div>';
+    }
+    div.innerHTML = '<div class="q">「' + esc(q) + '」</div>' +
+      (notesHtml ? '<div class="notes">' + notesHtml + '</div>' : '');
+    wrap.appendChild(div);
+  }
+  out.appendChild(wrap);
+}
+function jumpToHighlight(h){
+  if (!state.book || !h) return;
+  const segIdx = segIndexAtOffset(h.start || 0);
+  ensureRendered(segIdx + 2);
+  const el = state.els[segIdx];
+  if (!el) return;
+  // 在段内找 mark
+  const m = el.querySelector('mark[data-hl-id="' + (h.id || "").replace(/"/g, '\\"') + '"]');
+  // 高亮闪烁
+  const target = m || el;
+  target.classList.remove("flash"); void target.offsetWidth; target.classList.add("flash");
+  view.scrollTop = Math.max(0, el.offsetTop - VTOP - 90);
+  state.currentSeg = segIdx; updateBar();
+  // 自动收起抽屉
+  if (window.innerWidth < 900) closePanels();
+}
+
+/* ---------------- 启动 ---------------- */
+(async function boot(){
+  applyPref();
+  let books = [];
+  try {
+    books = await loadBooks();
+  } catch (e) {
+    // 打开页面时后端就没在跑（手机常干这事）：给个空页 + 上面那条能照做的提示，
+    // 别让页面彻底白着、也别只丢一句"Promise 未捕获"。
+    showEmpty();
+    return;
+  }
+  if (books.length) openBook(books[0].name);
+  else showEmpty();
+})();
+</script>
+</body>
+</html>

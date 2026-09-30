@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ===== 读伴内核：运行时数据，绝不入库（书是你的，进度是你的）=====
+core/书库/
+core/data/
+书库/
+data/
+发布/
+参考/
+*.zip
+*.tar.gz
