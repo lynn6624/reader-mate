@@ -41,6 +41,16 @@
   #bkChapter{font-size:12px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
   #pct{font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums}
   #barRight{display:flex; align-items:center; gap:6px}
+  /* 窄屏（手机）：顶栏装不下时把按钮文字藏起来、只留符号。
+     不这么做的话 .ibtn 有 white-space:nowrap 不肯收缩，整条顶栏会超出视口，
+     把整个页面撑宽——连正文都会贴到屏幕右边（最右边的按钮看着像"不见了"）。 */
+  @media (max-width: 480px){
+    #bar{gap:6px; padding:0 8px}
+    #bar .lbl{display:none}
+    #barRight{gap:4px}
+    #bar .ibtn{padding:6px 8px}
+    #bkChapter{display:none}
+  }
 
   #pbar{position:fixed; top:52px; left:0; right:0; height:2px; background:transparent; z-index:20}
   #pbar i{display:block; height:100%; width:0; background:var(--accent); transition:width .2s}
@@ -328,15 +338,15 @@
 <body>
 
 <div id="bar">
-  <button class="ibtn" id="btnLib">☰ 书库</button>
+  <button class="ibtn" id="btnLib" title="书库">☰<span class="lbl"> 书库</span></button>
   <div id="titleBox">
     <span id="bkTitle">读伴</span>
     <span id="bkChapter"></span>
   </div>
   <div id="barRight">
     <span id="pct">—</span>
-    <button class="ibtn" id="btnTts" title="朗读 / 停止">▶ 朗读</button>
-    <button class="ibtn" id="btnSearch">🔍 搜索</button>
+    <button class="ibtn" id="btnTts" title="朗读 / 停止">▶<span class="lbl"> 朗读</span></button>
+    <button class="ibtn" id="btnSearch" title="搜索">🔍<span class="lbl"> 搜索</span></button>
     <button class="ibtn" id="btnFontDec" title="字号 -">A-</button>
     <button class="ibtn" id="btnFontInc" title="字号 +">A+</button>
     <button class="ibtn" id="btnTheme" title="换主题">☾</button>
@@ -671,7 +681,10 @@ function updateBar(){
   $("#bkChapter").textContent = (seg && seg.chapter && seg.chapter !== seg.text) ? "· " + seg.chapter : "";
   const chars = state.book ? state.book.chars : 0;
   const pct = chars && seg ? seg.start / chars : 0;
-  $("#pct").textContent = chars ? (pct * 100).toFixed(1) + "%　" + seg.start + "/" + chars : "—";
+  // 窄屏只留百分比：后面那串"29856/284638"是给 AI 看的字符偏移，手机上会把顶栏挤爆
+  $("#pct").textContent = chars
+    ? (pct * 100).toFixed(1) + "%" + (window.innerWidth < 480 ? "" : "　" + seg.start + "/" + chars)
+    : "—";
   $("#pbar i").style.width = (pct * 100).toFixed(2) + "%";
 }
 
