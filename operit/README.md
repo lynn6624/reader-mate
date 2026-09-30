@@ -27,8 +27,25 @@
 
 1. 把本目录整个放进 Operit 的开发包目录，例如
    `/sdcard/Download/Operit/dev_package/com.zeroone.readermate/`（**目录名要与 `toolpkg_id` 一致**）。
-2. 用 Operit 的包安装/烧录功能加载 `manifest.json`。
+2. **把 `manifest.json` 装进 Operit（俗称「烧录」）** —— 二选一：
+
+   **A · AI 烧（推荐，最稳）**：若 Operit 侧装了 `operit_editor` 这个包，直接让它调用：
+
+   ```
+   operit_editor:debug_install_toolpkg
+     source_path = /sdcard/Download/Operit/dev_package/com.zeroone.readermate/manifest.json
+     wait_ms = 20000
+   ```
+
+   返回成功即完成注册，**全程不需要任何界面操作**。本项目开发时一直用这条，没出过岔。
+
+   **B · 人工导入**：若你的 Operit「包管理 → 插件」里存在「导入本地包 / 安装工具包」这类入口，可把本目录打成一个 `.toolpkg`（就是 **zip 改名**，内含 `manifest.json` + `dist/`），再从该入口选它安装。
+
+   ⚠️ 并非所有版本都暴露这个入口；**若翻不到，就回到 A** —— A 不依赖任何界面。
+
 3. 打开 Operit 左侧栏，点「读伴」。
+
+> 装完左侧栏没出现「读伴」时：先**重启 Operit**；若仍无，检查 Operit 版本是否支持 ToolPkg 的 `main_sidebar_plugins`（API 1.0.0 起）。
 
 ## 两处按需改（你的路径/端口不一定一样）
 
