@@ -707,6 +707,10 @@ function createSpeechSynthesisEngine(){
   const supported = (typeof window !== "undefined") && ("speechSynthesis" in window) && (typeof window.SpeechSynthesisUtterance === "function");
   if (!supported) return { isSupported: () => false, speak: () => {}, pause: () => {}, resume: () => {}, stop: () => {}, getVoices: () => [] };
   const SYN = window.speechSynthesis;
+  // 「当前这句」的引用：cancel() 之后，被取消的 utterance 仍然会 fire onend/onerror。
+  // 所以回调里必须确认「我还是当前这句」，否则那个迟到的回调会把状态推到下一段——
+  // 表现就是：滚动条跳了、语音没跳、同一段被念两遍（2026-09-30 002 报的 bug）。
+  let cur = null;
   // 一些浏览器在首次 getVoices() 时还没异步加载完；onvoiceschanged 触发后再补一次
   let cachedVoices = [];
   function pickVoices(){
@@ -729,14 +733,22 @@ function createSpeechSynthesisEngine(){
         const v = pickVoices().find(x => x.voiceURI === opts.voice || x.name === opts.voice);
         if (v) u.voice = v;
       }
-      // 一些 WebView 会忘记 fire onend：兜底用 setTimeout 给个最大时长，但优先信任 onend
-      u.onend = function(){ if (typeof onEnd === "function") onEnd(); };
-      u.onerror = function(){ if (typeof onEnd === "function") onEnd(); };
-      try { SYN.speak(u); } catch (e){ if (typeof onEnd === "function") onEnd(); }
+      cur = u;   // 从这一句起，「当前」就是它
+      // 只有当前这句的回调才算数：cancel() 后被取消的那个仍会 fire，必须拦掉。
+      // 再加一道"只算一次"：这样"派下一段"是幂等的（个别浏览器会重复 fire）。
+      const once = function(){
+        if (cur !== u || u.__ended) return;
+        u.__ended = true;
+        if (typeof onEnd === "function") onEnd();
+      };
+      u.onend = once;
+      u.onerror = once;
+      try { SYN.speak(u); } catch (e){ if (cur === u && typeof onEnd === "function") onEnd(); }
     },
     pause: function(){ try { SYN.pause(); } catch (e){} },
     resume: function(){ try { SYN.resume(); } catch (e){} },
     stop: function(){
+      cur = null;                        // 先作废回调，再 cancel
       try { SYN.cancel(); } catch (e){}
     },
   };
@@ -759,6 +771,7 @@ const tts = {
   lastSaveAt: 0,          // 上次写盘的时间戳（ms）
   saveTimer: null,
   pendingResumeFrom: 0,   // 用于"从上次的位置继续念"时定位
+  gen: 0,                 // 代际号：每次停止/重开都 +1，用来作废在途的旧回调
 };
 
 function ttsSupported(){
@@ -862,7 +875,9 @@ function ttsSpeakSeg(idx){
   ttsMarkActiveSeg(idx);
   ttsScrollToActive(idx);
   ttsMarkProgress(idx);             // 写 tts_offset（节流内）
+  const myGen = tts.gen;            // 记住这一代的编号
   ttsEngine.speak(seg.text, { rate: tts.rate, voice: tts.voice === "default" ? null : tts.voice }, () => {
+    if (myGen !== tts.gen) return;  // 过期回调（换音色/重开之前留下的）——直接丢掉
     // onend：若状态没变成 idle/stopped（用户没停/没暂停）就念下一段
     if (tts.state === "playing") ttsSpeakSeg(idx + 1);
   });
@@ -937,6 +952,7 @@ function ttsResume(){
 
 function ttsStopInternal(silent){
   // silent=true 是自然走完，不要 toast
+  tts.gen++;              // 作废所有在途回调，免得它们把状态推到下一段
   ttsEngine.stop();
   tts.state = "idle";
   // 清视觉标记
@@ -1909,8 +1925,25 @@ function jumpToHighlight(h){
 }
 
 /* ---------------- 启动 ---------------- */
+/* 版本小字：一眼确认「跑的是哪一版」，专治「本地没更新 / 手机上是旧的」这类说不清的疑问。 */
+async function showBuildTag(){
+  try {
+    const r = await fetchAuth("/api/ping");
+    const j = await r.json();
+    const el = document.createElement("div");
+    el.id = "buildTag";
+    el.textContent = "内核 " + (j.built || "?") + " · 后端 " + (j.core || "?");
+    el.title = "这两个是文件的改动时间；跟你以为的对不上，就是没更新";
+    el.style.cssText = "position:fixed;right:8px;bottom:6px;z-index:15;font-size:11px;" +
+      "color:var(--dim);opacity:.6;pointer-events:none;" +
+      "font-family:system-ui,'Microsoft YaHei',sans-serif";
+    document.body.appendChild(el);
+  } catch (e) { /* 拿不到就不显示，别打扰阅读 */ }
+}
+
 (async function boot(){
   applyPref();
+  showBuildTag();
   // 初始化朗读（不支持环境会在这里走降级分支）
   ttsInit();
   let books = [];
