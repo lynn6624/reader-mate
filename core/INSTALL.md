@@ -508,6 +508,16 @@ V1 故意不做的（也**不打算**在 INSTALL 层面绕过）：
 - **MiniMax**：`provider: "minimax"`。**除了 key 还要 `group`（GroupId）**——它的 TTS 按 GroupId 定位账号，**不带就报 401 / `token is unusable`**。GroupId 在控制台的「账户管理 → 基本信息」里。音色名见它的[系统音色列表](https://platform.minimax.cn/faq/system-voice-id)，也支持你自己克隆的音色（把 `voice` 填成克隆音色 ID）。
 - **任何 OpenAI 兼容的 TTS**：`provider: "openai"`，把 `base` 指到对方域名即可。
 
+### MiniMax 有两种 Key（实测踩过的坑）
+
+| Key 前缀 | 类型 | 用于 | 要不要 GroupId |
+| --- | --- | --- | --- |
+| `sk-cp-` | **订阅 Key** | M Plan / 积分调用 | **不要**（实测直接就能用） |
+| `sk-api-` | **按量付费 Key** | 按量计费 | **要**（不带会报 401 / `token is unusable`） |
+
+按量付费的 key 还得去「账户管理 → 账户信息」复制 **GroupId** 填进 `group` 字段；订阅 key 不用填。
+用哪个取决于你想**花积分**还是**花余额**——这是个花钱策略问题，不是技术问题。
+
 ### 云端用不了的时候
 
 **会自动切回系统嗓子**，并在页面底部红条上说明原因（不会静默无声）。修好 `data/tts.json` 后重启后端即可再用云端。
