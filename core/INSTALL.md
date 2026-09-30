@@ -470,3 +470,47 @@ V1 故意不做的（也**不打算**在 INSTALL 层面绕过）：
 - epub 富格式（图片、表格、公式）：见 README.md 的 `tools/epub2txt.py` 已知局限。
 
 遇到的不是以上列出的问题时，先看 `data/server.err.log`、浏览器底部红条、再看 [README.md](README.md)。
+
+---
+
+## 10. 启用云端朗读（可选，默认关闭）
+
+浏览器内置的语音合成（`speechSynthesis`）在部分 Android WebView 里**根本不可用**（Operit 的侧边栏就是）。这种情况下可以让**读伴后端**去合成音频，前端用 `<audio>` 播——音频播放哪儿都支持。
+
+**不配置就完全不启用**：`/api/tts` 回 501，前端自动回落到内置语音，行为跟以前一模一样。这个项目「纯标准库、零依赖」的底线没被破坏。
+
+### 怎么配（二选一）
+
+**A. 写进 `data/tts.json`**（推荐；该文件已被 `.gitignore` 排除，不会进版本库）
+
+```json
+{
+  "provider": "minimax",
+  "key": "你的 API key",
+  "voice": "female-shaonv"
+}
+```
+
+**B. 环境变量**（优先级高于上面的文件）
+
+| 变量 | 说明 |
+| --- | --- |
+| `READER_TTS` | `minimax` 或 `openai`；不设 = 关闭 |
+| `READER_TTS_KEY` | API key |
+| `READER_TTS_MODEL` | 可选。默认 `minimax=speech-02-hd` / `openai=tts-1` |
+| `READER_TTS_VOICE` | 可选。默认 `minimax=female-shaonv` / `openai=alloy` |
+| `READER_TTS_BASE` | 可选。自定义 endpoint（OpenAI 兼容服务，如硅基流动） |
+
+### 支持哪些服务
+
+- **MiniMax**：`provider: "minimax"`，音色名见它的[系统音色列表](https://platform.minimax.cn/faq/system-voice-id)。国内直连，也支持你自己克隆的音色。
+- **任何 OpenAI 兼容的 TTS**：`provider: "openai"`，把 `base` 指到对方域名即可。
+
+### 怎么知道生效了
+
+**不用告诉前端。** 页面启动时会问一次 `/api/ping`，后端说"我有朗读服务"（`tts: true`），前端就自动改用后端嗓子；没配就用内置的。判据很直接：**点朗读有没有声音**。
+
+### 两件必须知道的事
+
+1. **按字符计费**：云端嗓子不免费。读伴按段在内存里缓存（同一段重听不再计费，最多 80 段），但整本书听下来仍有成本，自己估量。
+2. **key 只留在本机**：它只被后端读，**绝不会发给前端**（前端只拿音频）；`data/tts.json` 也不进版本库。

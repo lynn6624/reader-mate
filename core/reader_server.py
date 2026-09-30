@@ -13,6 +13,7 @@
 启动：python reader_server.py           默认 127.0.0.1:8831
       可用环境变量 READER_HOST / READER_PORT 覆盖
 """
+import hashlib
 import hmac
 import json
 import os
@@ -20,6 +21,7 @@ import re
 import threading
 import time
 import urllib.parse
+import urllib.request
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -46,6 +48,153 @@ _lock = threading.Lock()
 # ---------------------------------------------------------------- 基础工具
 def now_iso():
     return datetime.now().isoformat(timespec="seconds")
+
+
+def mtime_tag(path: str) -> str:
+    """文件改动时间的短标签（MM-DD HH:MM）。
+
+    用途：页面右下角显示「内核 xx · 后端 xx」，一眼确认跑的是哪一版——
+    专治「本地没更新 / 手机上是旧的」这类说不清的疑问。
+    """
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(path)).strftime("%m-%d %H:%M")
+    except OSError:
+        return "?"
+
+
+# ---------------------------------------------------------------- 朗读（TTS，可选）
+# 浏览器内置的语音合成（speechSynthesis）在部分 WebView 里根本不可用（Operit 就中招），
+# 所以这里给一条「后端合成 → 前端用 <audio> 播」的兜底路：音频播放哪儿都支持。
+#
+# 这是**可选功能**：不配置就完全不启用（/api/tts 回 501，前端自动回落到内置语音）。
+# 「纯标准库、零依赖」是这个项目的卖点，不能被它破坏。
+#
+# 配置来源（环境变量优先，其次 data/tts.json）：
+#   READER_TTS        minimax | openai    （不设 = 关闭）
+#   READER_TTS_KEY    API key
+#   READER_TTS_MODEL  可选：默认 minimax=speech-02-hd / openai=tts-1
+#   READER_TTS_VOICE  可选：默认 minimax=female-shaonv / openai=alloy
+#   READER_TTS_BASE   可选：自定义 endpoint（openai 兼容的服务，如硅基流动）
+TTS_TEXT_MAX = 800        # 单次合成的字数上限（朗读按段来，段本身最长 1200）
+TTS_CACHE_MAX = 80        # 缓存多少段音频：同一段重听不再重复计费
+_tts_cache = {}
+_tts_cache_order = []
+
+
+class TTSError(Exception):
+    """朗读服务出错（没配置 / 上游返回错误 / 连不上）。"""
+
+
+def load_tts_config() -> dict:
+    """读朗读配置：环境变量优先，其次 data/tts.json。"""
+    cfg = {}
+    p = os.path.join(DATA_DIR, "tts.json")
+    try:
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            if isinstance(d, dict):
+                cfg = d
+    except Exception:
+        cfg = {}
+
+    def pick(env: str, key: str, default: str = "") -> str:
+        v = (os.environ.get(env) or "").strip()
+        if not v:
+            v = str(cfg.get(key) or "").strip()
+        return v or default
+
+    return {
+        "provider": pick("READER_TTS", "provider").lower(),
+        "key": pick("READER_TTS_KEY", "key"),
+        "model": pick("READER_TTS_MODEL", "model"),
+        "voice": pick("READER_TTS_VOICE", "voice"),
+        "base": pick("READER_TTS_BASE", "base").rstrip("/"),
+    }
+
+
+def tts_available() -> bool:
+    """配了 provider 和 key 才算可用。"""
+    c = load_tts_config()
+    return bool(c["provider"] and c["key"])
+
+
+def tts_minimax(text: str, voice: str, speed: float, cfg: dict):
+    """MiniMax 同步语音合成。返回 (音频 bytes, content_type)。"""
+    vid = voice or cfg["voice"] or "female-shaonv"
+    body = {
+        "model": cfg["model"] or "speech-02-hd",
+        "text": text,
+        "stream": False,
+        "voice_setting": {"voice_id": vid, "speed": speed, "vol": 1.0, "pitch": 0},
+        "audio_setting": {"format": "mp3", "sample_rate": 32000, "bitrate": 128000, "channel": 1},
+        # 用 hex 而不是 url：我们解码后自己吐音频流，不依赖外部 CDN 在手机端可达
+        "output_format": "hex",
+    }
+    base = cfg["base"] or "https://api.minimax.cn"
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        base + "/v1/t2a_v2", data=data, method="POST",
+        headers={"Authorization": "Bearer " + cfg["key"], "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        j = json.loads(r.read().decode("utf-8"))
+    br = j.get("base_resp") or {}
+    code = br.get("status_code")
+    if code not in (0, None):
+        raise TTSError("上游返回 %s：%s" % (code, br.get("status_msg") or ""))
+    hexs = (j.get("data") or {}).get("audio") or ""
+    if not hexs:
+        raise TTSError("上游没返回音频")
+    try:
+        return bytes.fromhex(hexs), "audio/mpeg"
+    except ValueError:
+        raise TTSError("上游音频数据格式不对")
+
+
+def tts_openai(text: str, voice: str, speed: float, cfg: dict):
+    """OpenAI 兼容的 /v1/audio/speech（硅基流动一类服务都能接）。"""
+    base = cfg["base"] or "https://api.openai.com"
+    body = {
+        "model": cfg["model"] or "tts-1",
+        "input": text,
+        "voice": voice or cfg["voice"] or "alloy",
+        "speed": speed,
+        "response_format": "mp3",
+    }
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        base + "/v1/audio/speech", data=data, method="POST",
+        headers={"Authorization": "Bearer " + cfg["key"], "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return r.read(), "audio/mpeg"
+
+
+def tts_synthesize(text: str, voice: str, speed: float):
+    """合成一段（带内存缓存：同一段重听不再计费）。"""
+    cfg = load_tts_config()
+    if not cfg["provider"]:
+        raise TTSError("没配置朗读服务")
+    ck = hashlib.sha256(
+        ("%s|%s|%s|%s" % (cfg["provider"], text, voice, speed)).encode("utf-8")).hexdigest()
+    with _lock:
+        hit = _tts_cache.get(ck)
+    if hit:
+        return hit
+    if cfg["provider"] == "minimax":
+        out = tts_minimax(text, voice, speed, cfg)
+    elif cfg["provider"] == "openai":
+        out = tts_openai(text, voice, speed, cfg)
+    else:
+        raise TTSError("不认识的 provider：%s" % cfg["provider"])
+    with _lock:
+        if ck in _tts_cache:
+            _tts_cache_order.remove(ck)
+        _tts_cache[ck] = out
+        _tts_cache_order.append(ck)
+        while len(_tts_cache_order) > TTS_CACHE_MAX:
+            old = _tts_cache_order.pop(0)
+            _tts_cache.pop(old, None)
+    return out
 
 
 def decode_bytes(b: bytes) -> str:
@@ -388,7 +537,13 @@ class Handler(BaseHTTPRequestHandler):
             # 免鉴权的小路径：/api/ping 给保活脚本/健康检查用（只回一句"活着"，不吐任何数据）；
             # favicon 也无所谓。放在鉴权之前，否则保活脚本会拿到 401 误判服务没起。
             if path == "/api/ping":
-                return self._json({"ok": True, "service": "reader-mate", "version": 1})
+                tc = load_tts_config()
+                return self._json({"ok": True, "service": "reader-mate", "version": 1,
+                                   "built": mtime_tag(HTML_FILE),
+                                   "core": mtime_tag(os.path.abspath(__file__)),
+                                   # 前端据此决定"用后端嗓子还是内置嗓子"（没配就是 false）
+                                   "tts": bool(tc["provider"] and tc["key"]),
+                                   "tts_provider": tc["provider"] or ""})
             if path == "/favicon.ico":
                 self.send_response(204)
                 self.send_header("Content-Length", "0")
@@ -407,9 +562,46 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_notes()
             if path == "/api/notes/export":
                 return self._api_notes_export()
+            if path == "/api/tts":
+                return self._api_tts()
             return self._err("没有这个路径", 404)
         except Exception as e:
             return self._err("服务端出错：%s" % e, 500)
+
+    # ---- 朗读（TTS，可选功能）----
+    def _api_tts(self):
+        """GET /api/tts?text=&voice=&speed=  → 音频流。
+
+        没配置朗读服务时回 501，前端据此回落到浏览器内置语音合成。
+        注意：<audio> 标签带不了 X-Token 头，所以它只能靠 ?token= 过鉴权——
+        _token_ok() 本来就认这个查询参数。
+        """
+        if not tts_available():
+            return self._err("这个后端没配置朗读服务（可选功能）", 501)
+        q = self._query()
+        text = (q.get("text") or [""])[0].strip()
+        if not text:
+            return self._err("text 不能为空")
+        if len(text) > TTS_TEXT_MAX:
+            text = text[:TTS_TEXT_MAX]
+        voice = (q.get("voice") or [""])[0].strip()
+        try:
+            speed = float((q.get("speed") or ["1"])[0])
+        except (TypeError, ValueError):
+            speed = 1.0
+        speed = max(0.5, min(2.0, speed))
+        try:
+            data, ctype = tts_synthesize(text, voice, speed)
+        except TTSError as e:
+            return self._err("朗读服务出错：%s" % e, 502)
+        except Exception as e:
+            return self._err("朗读服务连不上：%s" % e, 502)
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
 
     def _page(self):
         try:

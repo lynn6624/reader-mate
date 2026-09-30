@@ -753,7 +753,57 @@ function createSpeechSynthesisEngine(){
     },
   };
 }
-const ttsEngine = createSpeechSynthesisEngine();
+/* 后端 TTS 引擎：把文字发给读伴后端，拿回 mp3 用 <audio> 播。
+   用途：有些 WebView 根本不支持 speechSynthesis（Operit 就是），但音频播放都支持。
+   同一套「当前这句」闸（cur）在这儿也必须成立——audio 的 onended 同样会迟到。 */
+function createBackendTtsEngine(){
+  let cur = null;
+  return {
+    isSupported: () => true,        // 能不能用由 ttsMode 决定（后端没配就不会选它）
+    getVoices: () => [{ voiceURI: "", name: "后端默认音色" }],
+    speak: function(text, opts, onEnd){
+      const q = new URLSearchParams();
+      q.set("text", text);
+      if (opts && opts.voice && opts.voice !== "default") q.set("voice", opts.voice);
+      if (opts && typeof opts.rate === "number") q.set("speed", String(opts.rate));
+      const tk = getToken();
+      if (tk) q.set("token", tk);   // <audio> 带不了请求头，只能走查询参数（后端认 ?token=）
+      const a = new Audio("/api/tts?" + q.toString());
+      const once = function(){
+        if (cur !== a || a.__ended) return;
+        a.__ended = true;
+        cur = null;
+        if (typeof onEnd === "function") onEnd();
+      };
+      a.onended = once;
+      a.onerror = once;
+      cur = a;
+      const p = a.play();
+      if (p && typeof p.catch === "function") p.catch(function(){ once(); });  // 播不动也别卡住
+    },
+    pause: function(){ if (cur) { try { cur.pause(); } catch (e){} } },
+    resume: function(){ if (cur) { try { cur.play(); } catch (e){} } },
+    stop: function(){
+      const a = cur;
+      cur = null;                       // 先作废回调，再停（跟 speechSynthesis 那套一致）
+      if (a) { try { a.pause(); a.src = ""; } catch (e){} }
+    },
+  };
+}
+const ttsEngineSystem = createSpeechSynthesisEngine();
+const ttsEngineBackend = createBackendTtsEngine();
+
+/* 用哪个嗓子：ttsMode 由 /api/ping 的 tts 字段决定（后端配了朗读服务就用后端）。
+   做成代理对象——上层 UI、状态机、写盘逻辑一行都不用改。 */
+let ttsMode = "system";
+const ttsEngine = {
+  isSupported: () => (ttsMode === "backend") ? true : ttsEngineSystem.isSupported(),
+  getVoices: () => (ttsMode === "backend") ? ttsEngineBackend.getVoices() : ttsEngineSystem.getVoices(),
+  speak: (t, o, cb) => (ttsMode === "backend") ? ttsEngineBackend.speak(t, o, cb) : ttsEngineSystem.speak(t, o, cb),
+  pause: () => (ttsMode === "backend") ? ttsEngineBackend.pause() : ttsEngineSystem.pause(),
+  resume: () => (ttsMode === "backend") ? ttsEngineBackend.resume() : ttsEngineSystem.resume(),
+  stop: () => (ttsMode === "backend") ? ttsEngineBackend.stop() : ttsEngineSystem.stop(),
+};
 
 /* TTS 状态机（UI 与 engine 之间的协调器）
  *   idle → playing ⇄ paused → idle
@@ -1930,6 +1980,7 @@ async function showBuildTag(){
   try {
     const r = await fetchAuth("/api/ping");
     const j = await r.json();
+    if (j && j.tts) ttsMode = "backend";   // 后端配了朗读服务 → 用后端嗓子（手机 WebView 也支持）
     const el = document.createElement("div");
     el.id = "buildTag";
     el.textContent = "内核 " + (j.built || "?") + " · 后端 " + (j.core || "?");
@@ -1938,12 +1989,14 @@ async function showBuildTag(){
       "color:var(--dim);opacity:.6;pointer-events:none;" +
       "font-family:system-ui,'Microsoft YaHei',sans-serif";
     document.body.appendChild(el);
+    return j;
   } catch (e) { /* 拿不到就不显示，别打扰阅读 */ }
+  return null;
 }
 
 (async function boot(){
   applyPref();
-  showBuildTag();
+  await showBuildTag();   // 顺便确定用哪个朗读引擎（拿不到就用系统嗓子）
   // 初始化朗读（不支持环境会在这里走降级分支）
   ttsInit();
   let books = [];
