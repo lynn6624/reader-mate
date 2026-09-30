@@ -471,7 +471,7 @@ function showErr(msg){
       "max-height:38vh;overflow:auto;box-shadow:0 -4px 16px rgba(0,0,0,.3)";
     document.body.appendChild(d);
   }
-  d.textContent = "⚠ 页面出错：" + msg + "\n（把这一行截屏反馈给开发者）";
+  d.textContent = "⚠ 页面出错：" + msg + "\n（截屏这一行，方便排查）";
 }
 window.addEventListener("error", e => showErr((e.message || String(e.error)) +
   "  @" + String(e.filename || "").split(/[\\/]/).pop() + ":" + (e.lineno || "?")));
