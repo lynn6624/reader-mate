@@ -45,6 +45,42 @@
   #pbar{position:fixed; top:52px; left:0; right:0; height:2px; background:transparent; z-index:20}
   #pbar i{display:block; height:100%; width:0; background:var(--accent); transition:width .2s}
 
+  /* ---------- 朗读控制条 ---------- */
+  /* 默认折叠在顶栏下面；#ttsBar 出现时把内容往下挤 64px。 */
+  #ttsBar{
+    position:fixed; top:54px; left:0; right:0; z-index:19;
+    background:var(--bg); border-bottom:1px solid var(--line);
+    padding:8px 12px; display:flex; flex-direction:column; gap:6px;
+    font-family:system-ui,"Microsoft YaHei",sans-serif;
+  }
+  /* 控制条展开时，把阅读区往下挪，给它腾位置 */
+  body.tts-open #view{top:calc(54px + var(--tts-bar-h, 0px))}
+  /* 不支持时按钮灰掉 */
+  #btnTts[disabled], .ttsRow .ibtn[disabled]{opacity:.5; cursor:not-allowed}
+  .ttsRow{display:flex; align-items:center; gap:6px; flex-wrap:wrap}
+  .ttsSep{width:1px; height:18px; background:var(--line); margin:0 4px}
+  .ttsLbl{font-size:12px; color:var(--dim)}
+  .ttsSel{
+    font-size:12px; padding:4px 6px; border:1px solid var(--line);
+    border-radius:6px; background:var(--card); color:var(--fg); outline:none;
+  }
+  .ttsCheck{font-size:12px; color:var(--dim); display:inline-flex; align-items:center; gap:4px}
+  .ttsHint{font-size:12px; color:var(--dim)}
+  .ttsHint b{color:var(--accent); font-variant-numeric:tabular-nums}
+
+  /* ---------- 正在朗读的那一段（视觉跟随） ---------- */
+  /* 跟划线 mark 区分：mark 是段落里的黄底/线型；这段标记是段元素左侧 3px 竖条 + 淡色底。
+   * 用 box-shadow 模拟竖条，避免 border 改变段落宽度造成布局抖动。 */
+  .seg[data-tts-active="1"]{
+    background:rgba(154,107,63,.10);
+    box-shadow:inset 3px 0 0 var(--accent);
+    border-radius:2px;
+    transition:background .2s;
+  }
+  html[data-theme="dark"] .seg[data-tts-active="1"]{
+    background:rgba(199,154,99,.14);
+  }
+
   /* ---------- 阅读区 ---------- */
   #view{position:fixed; inset:54px 0 0 0; overflow-y:auto; scroll-behavior:auto}
   #reader{
@@ -294,6 +330,7 @@
   </div>
   <div id="barRight">
     <span id="pct">—</span>
+    <button class="ibtn" id="btnTts" title="朗读 / 停止">▶ 朗读</button>
     <button class="ibtn" id="btnSearch">🔍 搜索</button>
     <button class="ibtn" id="btnFontDec" title="字号 -">A-</button>
     <button class="ibtn" id="btnFontInc" title="字号 +">A+</button>
@@ -301,6 +338,35 @@
   </div>
 </div>
 <div id="pbar"><i></i></div>
+
+<!-- 朗读控制条：默认隐藏；按了朗读按钮才出现 -->
+<div id="ttsBar" style="display:none">
+  <div class="ttsRow">
+    <button class="ibtn" id="btnTtsPlay" title="开始朗读">▶ 开始</button>
+    <button class="ibtn" id="btnTtsPause" title="暂停">⏸ 暂停</button>
+    <button class="ibtn" id="btnTtsResume" title="继续">▷ 继续</button>
+    <button class="ibtn" id="btnTtsStop" title="停止">■ 停止</button>
+    <span class="ttsSep"></span>
+    <label class="ttsLbl" for="ttsRate">语速</label>
+    <select id="ttsRate" class="ttsSel">
+      <option value="0.5">0.5x</option>
+      <option value="0.75">0.75x</option>
+      <option value="1" selected>1x</option>
+      <option value="1.25">1.25x</option>
+      <option value="1.5">1.5x</option>
+      <option value="2">2x</option>
+    </select>
+    <label class="ttsLbl" for="ttsVoice">音色</label>
+    <select id="ttsVoice" class="ttsSel"><option value="default">系统默认</option></select>
+    <span class="ttsSep"></span>
+    <label class="ttsCheck"><input type="checkbox" id="ttsFollow" checked> 跟随滚动</label>
+  </div>
+  <div class="ttsRow" id="ttsResumeHint" style="display:none">
+    <span class="ttsHint">上次念到这里 · 偏移 <b id="ttsResumeOff">0</b></span>
+    <button class="ibtn" id="btnTtsResumeFromLast">从上次的位置继续念</button>
+  </div>
+</div>
+
 <div id="view"><div id="reader"></div></div>
 
 <div id="mask"></div>
@@ -418,6 +484,7 @@ const state = {
   query: "",
   lastMarked: null,
   booksDir: "",        // 由后端 /api/books 的 dir 字段填，别在前端硬写盘符
+  ttsOffset: 0,        // 朗读位置（字符偏移）。与 state.currentSeg 是两套进度，互不覆盖。
 };
 
 /* ---------------- 带鉴权的 fetch 包装 ----------------
@@ -558,6 +625,7 @@ let saveTimer = null;
 function payload(){
   const seg = state.segs[state.currentSeg] || { start: 0, chapter: "" };
   const chars = state.book ? state.book.chars : 0;
+  // offset = 眼睛位置（跟 state.currentSeg 走）；tts_offset = 嘴位置（独立字段，互不覆盖）
   return {
     name: state.book.name,
     offset: seg.start,
@@ -565,6 +633,7 @@ function payload(){
     percent: chars ? seg.start / chars : 0,
     chapter: seg.chapter || "",
     anchor: (state.book.text.slice(seg.start, seg.start + 40) || "").replace(/\s+/g, " "),
+    tts_offset: state.ttsOffset || 0,
   };
 }
 function scheduleSave(){
@@ -613,6 +682,338 @@ view.addEventListener("scroll", () => {
   });
 }, { passive: true });
 
+/* ---------------- TTS（V3 · 第一步：系统嗓子） ----------------
+ * provider 抽象：ttsEngine 暴露五个接口
+ *   speak(text, opts)   —— 念一段；opts = {rate, voice}；内部用 onend 串下一段
+ *   pause() / resume()  —— 暂停 / 继续（pause 后才能 resume；speechSynthesis 的契约）
+ *   stop()              —— 完全停掉（清队列、清状态）
+ *   isSupported()       —— 环境是否支持（用来降级禁用按钮）
+ *   getVoices()         —— 候选音色（中文优先）
+ * 当前实现走浏览器内置 speechSynthesis；将来接 11labs / 本地 piper，
+ * 只换下面 createSpeechSynthesisEngine() 这块，前面的 UI/状态/写盘逻辑一行不动。
+ *
+ * ★★★ 替换这一层 ★★★  // <-- 将来接 11labs / 本地 TTS 时，把 createSpeechSynthesisEngine
+ *                          换成 createElevenLabsEngine / createLocalPiperEngine 即可；
+ *                          上层 UI 调用、tts_offset 节流、视觉跟随都不动。
+ */
+function createSpeechSynthesisEngine(){
+  const supported = (typeof window !== "undefined") && ("speechSynthesis" in window) && (typeof window.SpeechSynthesisUtterance === "function");
+  if (!supported) return { isSupported: () => false, speak: () => {}, pause: () => {}, resume: () => {}, stop: () => {}, getVoices: () => [] };
+  const SYN = window.speechSynthesis;
+  // 一些浏览器在首次 getVoices() 时还没异步加载完；onvoiceschanged 触发后再补一次
+  let cachedVoices = [];
+  function pickVoices(){
+    const v = SYN.getVoices() || [];
+    if (v.length) cachedVoices = v;
+    return cachedVoices;
+  }
+  if (typeof SYN.onvoiceschanged !== "undefined"){
+    SYN.onvoiceschanged = () => pickVoices();
+  }
+  pickVoices();
+
+  return {
+    isSupported: () => true,
+    getVoices: () => pickVoices(),
+    speak: function(text, opts, onEnd){
+      const u = new SpeechSynthesisUtterance(String(text || ""));
+      if (opts && typeof opts.rate === "number") u.rate = opts.rate;
+      if (opts && opts.voice){
+        const v = pickVoices().find(x => x.voiceURI === opts.voice || x.name === opts.voice);
+        if (v) u.voice = v;
+      }
+      // 一些 WebView 会忘记 fire onend：兜底用 setTimeout 给个最大时长，但优先信任 onend
+      u.onend = function(){ if (typeof onEnd === "function") onEnd(); };
+      u.onerror = function(){ if (typeof onEnd === "function") onEnd(); };
+      try { SYN.speak(u); } catch (e){ if (typeof onEnd === "function") onEnd(); }
+    },
+    pause: function(){ try { SYN.pause(); } catch (e){} },
+    resume: function(){ try { SYN.resume(); } catch (e){} },
+    stop: function(){
+      try { SYN.cancel(); } catch (e){}
+    },
+  };
+}
+const ttsEngine = createSpeechSynthesisEngine();
+
+/* TTS 状态机（UI 与 engine 之间的协调器）
+ *   idle → playing ⇄ paused → idle
+ *   playing 时一段 onend 后自动派下一段；
+ *   stopped 后想继续必须重新 start（speechSynthesis 的契约）。
+ * 写盘节流：每读完一段把 state.ttsOffset 推到那段 start；每 2 段或 10 秒
+ * （哪个先到）调一次 saveNow()，停止时再补写一次。 */
+const tts = {
+  state: "idle",          // "idle" | "playing" | "paused"
+  queueIdx: 0,            // 当前正在念的段在 state.segs 里的索引
+  followScroll: true,
+  rate: 1,
+  voice: "default",
+  dirtySegs: 0,           // 距上次写盘又走了多少段
+  lastSaveAt: 0,          // 上次写盘的时间戳（ms）
+  saveTimer: null,
+  pendingResumeFrom: 0,   // 用于"从上次的位置继续念"时定位
+};
+
+function ttsSupported(){
+  return ttsEngine.isSupported();
+}
+
+/* 选中文音色优先；没中文就用第一个非默认；都没有就给空数组让 UI 落回"系统默认"。 */
+function ttsPickVoices(){
+  const all = ttsEngine.getVoices() || [];
+  const zh = all.filter(v => {
+    const lang = (v.lang || "").toLowerCase();
+    const name = (v.name || "").toLowerCase();
+    return lang.startsWith("zh") || /chinese|mandarin|cantonese|普通话|中文|粤语/.test(name);
+  });
+  if (zh.length) return zh;
+  return all;
+}
+
+function ttsFillVoiceSelect(){
+  const sel = $("#ttsVoice");
+  if (!sel) return;
+  const voices = ttsPickVoices();
+  sel.innerHTML = "";
+  const def = document.createElement("option");
+  def.value = "default"; def.textContent = "系统默认";
+  sel.appendChild(def);
+  for (const v of voices){
+    const o = document.createElement("option");
+    o.value = v.voiceURI || v.name;
+    o.textContent = (v.name || v.voiceURI) + (v.lang ? "  [" + v.lang + "]" : "");
+    sel.appendChild(o);
+  }
+  // 恢复上次选
+  try {
+    const saved = localStorage.getItem("r_tts_voice");
+    if (saved && [...sel.options].some(o => o.value === saved)) sel.value = saved;
+  } catch (e) {}
+}
+
+function ttsMarkActiveSeg(idx){
+  // 清除旧标记
+  for (const el of state.els){
+    if (el && el.dataset && el.dataset.ttsActive === "1") delete el.dataset.ttsActive;
+  }
+  const el = state.els[idx];
+  if (el) el.dataset.ttsActive = "1";
+}
+
+function ttsScrollToActive(idx){
+  if (!tts.followScroll || !state.els[idx]) return;
+  const el = state.els[idx];
+  const v = view;
+  const elTop = el.offsetTop - VTOP;
+  const elBot = elTop + el.offsetHeight;
+  const viewTop = v.scrollTop;
+  const viewBot = viewTop + v.clientHeight;
+  // 已经在视野里就不动，避免抖
+  if (elTop >= viewTop + 20 && elBot <= viewBot - 20) return;
+  v.scrollTop = Math.max(0, elTop - v.clientHeight * 0.35);
+}
+
+/* 节流写盘：每 2 段或 10 秒哪个先到都触发；停止时补一次。
+ * 实现：段数变化即时累计 dirtySegs；计时器兜底最慢 10 秒。 */
+function ttsMarkProgress(segIdx){
+  if (!state.book) return;
+  const seg = state.segs[segIdx];
+  if (!seg) return;
+  state.ttsOffset = seg.start;        // 只动 tts_offset，绝不动 offset
+  tts.dirtySegs++;
+  const now = Date.now();
+  const elapsed = now - (tts.lastSaveAt || 0);
+  if (tts.dirtySegs >= 2 || elapsed >= 10000){
+    tts.flushSave();
+  } else if (!tts.saveTimer){
+    // 设个兜底定时器，时间到就写；后面再 mark 会被它清掉重设
+    tts.saveTimer = setTimeout(() => tts.flushSave(), Math.max(1000, 10000 - elapsed));
+  }
+}
+function ttsFlushSaveNow(){
+  // 立即写盘并清节流状态（用于停止时补写）
+  if (tts.saveTimer){ clearTimeout(tts.saveTimer); tts.saveTimer = null; }
+  tts.dirtySegs = 0;
+  tts.lastSaveAt = Date.now();
+  saveNow();
+}
+tts.flushSave = ttsFlushSaveNow;
+tts.markProgress = ttsMarkProgress;
+
+/* 串下一段：当前段 onend → 派下一段；直到末尾就停。 */
+function ttsSpeakSeg(idx){
+  if (!state.book || idx >= state.segs.length){ ttsStopInternal(true); return; }
+  ensureRendered(idx + 1);
+  const seg = state.segs[idx];
+  const el = state.els[idx];
+  if (!el || !seg){
+    // 渲染还没跟上：递归下一段；这是开篇就读到末尾时偶尔发生
+    ttsSpeakSeg(idx + 1);
+    return;
+  }
+  tts.queueIdx = idx;
+  ttsMarkActiveSeg(idx);
+  ttsScrollToActive(idx);
+  ttsMarkProgress(idx);             // 写 tts_offset（节流内）
+  ttsEngine.speak(seg.text, { rate: tts.rate, voice: tts.voice === "default" ? null : tts.voice }, () => {
+    // onend：若状态没变成 idle/stopped（用户没停/没暂停）就念下一段
+    if (tts.state === "playing") ttsSpeakSeg(idx + 1);
+  });
+}
+
+function ttsStart(fromOffset){
+  if (!ttsSupported()){ toast("这个环境不支持朗读"); return; }
+  if (!state.book){ toast("先打开一本书再朗读"); return; }
+  if (tts.state !== "idle") return;   // 已开始就别重入
+  // 决定从哪一段开始：fromOffset 显式指定优先；其次 state.ttsOffset（=上次念到哪）；再次当前可见段
+  let startOff = (typeof fromOffset === "number" && fromOffset > 0) ? fromOffset : (state.ttsOffset || 0);
+  if (!startOff){
+    const cur = state.els[state.currentSeg];
+    startOff = cur ? (state.segs[state.currentSeg] && state.segs[state.currentSeg].start) || 0 : 0;
+  }
+  const startIdx = segIndexAtOffset(startOff);
+  tts.state = "playing";
+  tts.dirtySegs = 0;
+  tts.lastSaveAt = Date.now();
+  ttsUpdateUi();
+  ttsSpeakSeg(startIdx);
+}
+
+function ttsPause(){
+  if (tts.state !== "playing") return;
+  ttsEngine.pause();
+  tts.state = "paused";
+  ttsUpdateUi();
+}
+
+function ttsResume(){
+  if (tts.state !== "paused") return;
+  ttsEngine.resume();
+  tts.state = "playing";
+  ttsUpdateUi();
+}
+
+function ttsStopInternal(silent){
+  // silent=true 是自然走完，不要 toast
+  ttsEngine.stop();
+  tts.state = "idle";
+  // 清视觉标记
+  for (const el of state.els){
+    if (el && el.dataset && el.dataset.ttsActive === "1") delete el.dataset.ttsActive;
+  }
+  // 停止时补写一次进度
+  ttsFlushSaveNow();
+  ttsUpdateUi();
+  if (!silent) toast("已停止");
+}
+
+function ttsStop(){ ttsStopInternal(false); }
+
+/* UI 同步：按钮文字 + 视觉跟随开关状态 */
+function ttsUpdateUi(){
+  const btnBar = $("#btnTts");
+  const bar = $("#ttsBar");
+  const btnPlay = $("#btnTtsPlay"), btnPause = $("#btnTtsPause"), btnResume = $("#btnTtsResume");
+  if (btnBar) btnBar.textContent = (tts.state === "idle") ? "▶ 朗读" : "■ 停止";
+  if (bar){
+    const on = (tts.state !== "idle");
+    bar.style.display = on ? "flex" : "none";
+    document.body.classList.toggle("tts-open", on);
+    document.documentElement.style.setProperty("--tts-bar-h", on ? (bar.offsetHeight || 64) + "px" : "0px");
+  }
+  if (btnPlay) btnPlay.disabled = (tts.state !== "idle");
+  if (btnPause) btnPause.disabled = (tts.state !== "playing");
+  if (btnResume) btnResume.disabled = (tts.state !== "paused");
+  const flw = $("#ttsFollow");
+  if (flw) flw.checked = !!tts.followScroll;
+}
+
+/* 续听：打开书时如果后端回来的 progress.tts_offset > 0，就在朗读条上露一行提示 */
+function ttsShowResumeHint(){
+  const hint = $("#ttsResumeHint");
+  const offEl = $("#ttsResumeOff");
+  if (!hint || !offEl) return;
+  if (!state.book || !state.book.progress){ hint.style.display = "none"; return; }
+  const off = +(state.book.progress.tts_offset || 0);
+  if (off > 0){
+    offEl.textContent = off.toLocaleString();
+    hint.style.display = "flex";
+  } else {
+    hint.style.display = "none";
+  }
+}
+
+function ttsInit(){
+  // 1) 不支持：按钮禁用 + 一次 toast，不抛错
+  if (!ttsSupported()){
+    const btn = $("#btnTts");
+    if (btn) btn.disabled = true;
+    // 用 setTimeout 把 toast 推到 boot 之后，别抢"打开中…"
+    setTimeout(() => toast("这个环境不支持朗读"), 1800);
+    // 控制条仍渲出来但全是 disabled（让用户知道功能存在但不可用）
+    ttsFillVoiceSelect();
+    ttsUpdateUi();
+    return;
+  }
+  // 2) 恢复用户偏好（语速、音色、跟随滚动）
+  try {
+    const r = +(localStorage.getItem("r_tts_rate") || "1");
+    if (r >= 0.5 && r <= 2) tts.rate = r;
+    const f = localStorage.getItem("r_tts_follow");
+    if (f === "0") tts.followScroll = false;
+  } catch (e) {}
+  // 3) 填音色下拉
+  ttsFillVoiceSelect();
+  // 一些浏览器 voices 异步到达：再补一次
+  setTimeout(ttsFillVoiceSelect, 400);
+  setTimeout(ttsFillVoiceSelect, 1500);
+  // 4) 控件初始态
+  const rateSel = $("#ttsRate");
+  if (rateSel){
+    rateSel.value = String(tts.rate);
+    rateSel.addEventListener("change", () => {
+      tts.rate = parseFloat(rateSel.value) || 1;
+      try { localStorage.setItem("r_tts_rate", String(tts.rate)); } catch (e) {}
+      // 语速变化：正在念就让下一段生效（speechSynthesis 没"in-place 改语速"的契约）
+    });
+  }
+  const voiceSel = $("#ttsVoice");
+  if (voiceSel){
+    voiceSel.addEventListener("change", () => {
+      tts.voice = voiceSel.value || "default";
+      try { localStorage.setItem("r_tts_voice", tts.voice); } catch (e) {}
+    });
+  }
+  const followEl = $("#ttsFollow");
+  if (followEl){
+    followEl.checked = !!tts.followScroll;
+    followEl.addEventListener("change", () => {
+      tts.followScroll = followEl.checked;
+      try { localStorage.setItem("r_tts_follow", tts.followScroll ? "1" : "0"); } catch (e) {}
+    });
+  }
+  // 5) 按钮事件
+  $("#btnTts").addEventListener("click", () => {
+    if (tts.state === "idle") ttsStart();
+    else ttsStop();
+  });
+  $("#btnTtsPlay").addEventListener("click", () => {
+    if (tts.state === "idle") ttsStart();
+  });
+  $("#btnTtsPause").addEventListener("click", () => ttsPause());
+  $("#btnTtsResume").addEventListener("click", () => ttsResume());
+  $("#btnTtsStop").addEventListener("click", () => ttsStop());
+  $("#btnTtsResumeFromLast").addEventListener("click", () => {
+    const off = +(state.book && state.book.progress && state.book.progress.tts_offset) || 0;
+    if (off > 0){
+      ttsStart(off);
+    } else {
+      toast("没有上次的朗读位置");
+    }
+  });
+  ttsUpdateUi();
+}
+
 /* ---------------- 打开书 ---------------- */
 async function loadBooks(){
   const r = await fetchAuth("/api/books");
@@ -653,6 +1054,8 @@ async function loadBooks(){
 }
 
 async function openBook(name){
+  // 切书之前先停朗读（不 toast，避免干扰"打开中…"）
+  if (typeof ttsStopInternal === "function" && tts.state !== "idle") ttsStopInternal(true);
   toast("打开中…", 900);
   const r = await fetchAuth("/api/book?name=" + encodeURIComponent(name));
   const j = await r.json();
@@ -678,6 +1081,9 @@ async function openBook(name){
   // 打开新书：复位 tab、加载已有划线
   if (typeof switchLibTab === "function") switchLibTab("lib");
   loadHighlights(j.name);
+  // 续听：拉一下后端回来的 tts_offset，若 > 0 在朗读条上露提示
+  state.ttsOffset = (j.progress && j.progress.tts_offset) || 0;
+  ttsShowResumeHint();
   closePanels();
 }
 
@@ -1448,6 +1854,8 @@ function jumpToHighlight(h){
 /* ---------------- 启动 ---------------- */
 (async function boot(){
   applyPref();
+  // 初始化朗读（不支持环境会在这里走降级分支）
+  ttsInit();
   let books = [];
   try {
     books = await loadBooks();
