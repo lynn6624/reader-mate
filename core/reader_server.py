@@ -36,6 +36,11 @@ MD_FILE = os.path.join(DATA_DIR, "阅读进度.md")
 # 身份令牌（D1）：{身份: 钥匙}。文件不存在 → 视为空（只有 user 能写），
 # 绝不能因为缺文件就报错——缺它就是「还没配」，行为退回到 v1.0。
 IDENTITIES_FILE = os.path.join(DATA_DIR, "identities.json")
+# 写入审计：data/audit.log（JSONL，每行一条）。**只增不改**——它不防伪，
+# 只让「谁、什么时候、以什么身份、写了什么」留痕，事后可查。
+# 详见《V2-数据格式与限制》第六节 D1 的已知边界。
+AUDIT_FILE = os.path.join(DATA_DIR, "audit.log")
+AUDIT_ROTATE_BYTES = 2 * 1024 * 1024  # 2MB → 改名为 .1（覆盖旧的）
 
 HOST = os.environ.get("READER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("READER_PORT", "8831"))
@@ -348,6 +353,94 @@ def load_identities() -> dict:
         return {}
 
 
+# ---------------------------------------------------------------- 写入审计
+# 写入审计：data/audit.log = JSONL（一行一条 JSON），UTF-8，**只增不改**。
+#
+# 设计边界（照规格书第六节，**不防伪**）：
+#   - 记的是「谁、什么时候、以什么身份、写了什么」+ 钥匙前 4 位指纹。
+#   - **绝不写完整钥匙**，只看前 4 位当指纹（泄露后无法凭此冒充身份）。
+#   - 审计失败绝不能影响业务：任何异常一律吞掉，写请求照常返回。
+#   - 简单轮转：audit.log > 2MB → 改名为 audit.log.1（覆盖旧的）→ 新建空文件继续。
+def _audit_token_hint(token: str) -> str:
+    """钥匙指纹：前 4 位 + 省略号；没有则返空串。"""
+    t = (token or "").strip()
+    if not t:
+        return ""
+    return t[:4] + "…"
+
+
+def audit(who: str, token_hint: str, ip: str, act: str, target: str, extra: str = ""):
+    """追加一条审计记录。**审计失败一律吞掉，绝不影响业务**。
+
+    调用方在「写盘成功之后」才调；调用前应已确定身份 / 鉴权通过。
+    """
+    try:
+        entry = {
+            "at": now_iso(),
+            "who": who or "",
+            "token_hint": token_hint or "",
+            "ip": ip or "",
+            "act": act or "",
+            "target": target or "",
+            "extra": extra or "",
+        }
+        line = json.dumps(entry, ensure_ascii=False)
+        with _lock:
+            # 轮转：超过 2MB 就改名 → 新建空文件继续
+            try:
+                if os.path.exists(AUDIT_FILE) and os.path.getsize(AUDIT_FILE) >= AUDIT_ROTATE_BYTES:
+                    rot = AUDIT_FILE + ".1"
+                    try:
+                        os.remove(rot)
+                    except OSError:
+                        pass
+                    try:
+                        os.replace(AUDIT_FILE, rot)
+                    except OSError:
+                        # rename 失败就清空原文件继续（宁可丢旧数据也不阻塞业务）
+                        try:
+                            os.remove(AUDIT_FILE)
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+            # 追加写（用 "a" + utf-8，避免读全文的开销）
+            with open(AUDIT_FILE, "a", encoding="utf-8", newline="\n") as f:
+                f.write(line + "\n")
+    except Exception:
+        # **审计失败一律吞掉**——绝不能让审计出错把写业务也带崩。
+        pass
+
+
+def read_audit(limit: int = 100):
+    """倒序读最近 N 条审计记录。损坏行静默跳过。
+
+    返回 list[dict]。空文件返 []。
+    """
+    if limit <= 0:
+        return []
+    rows = []
+    try:
+        if not os.path.exists(AUDIT_FILE):
+            return []
+        # 全文件读、按行解析、倒序挑 N 条——日志量小（2MB 上限轮转），够用。
+        # 真要支持海量再去想分页。
+        with open(AUDIT_FILE, "r", encoding="utf-8", newline="\n") as f:
+            data = f.read()
+    except Exception:
+        return []
+    for line in data.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except Exception:
+            continue
+    rows.reverse()
+    return rows[:limit]
+
+
 def resolve_who(claimed, token: str) -> str:
     """D1 判定：定身份。
 
@@ -648,6 +741,13 @@ class Handler(BaseHTTPRequestHandler):
             pass
         return False
 
+    def _client_ip(self) -> str:
+        """取来源 IP。BaseHTTPRequestHandler 只给 client_address，直接用即可。"""
+        try:
+            return (self.client_address[0] if self.client_address else "") or ""
+        except Exception:
+            return ""
+
     def _who_token(self) -> str:
         """取身份令牌（D1）：优先 X-Who-Token 头，其次 ?who_token= 查询参数。
 
@@ -707,6 +807,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_notes_export()
             if path == "/api/tts":
                 return self._api_tts()
+            if path == "/api/audit":
+                return self._api_audit()
             return self._err("没有这个路径", 404)
         except Exception as e:
             return self._err("服务端出错：%s" % e, 500)
@@ -745,6 +847,22 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
+
+    def _api_audit(self):
+        """GET /api/audit?limit=N —— 读审计记录（倒序）。本机读，不要求身份令牌。
+
+        默认 limit=100，上限 1000（防误拉全表）。
+        """
+        try:
+            limit = int((self._query().get("limit") or ["100"])[0])
+        except (TypeError, ValueError):
+            limit = 100
+        if limit < 1:
+            limit = 1
+        if limit > 1000:
+            limit = 1000
+        rows = read_audit(limit)
+        return self._json({"ok": True, "count": len(rows), "entries": rows})
 
     def _page(self):
         try:
@@ -916,6 +1034,10 @@ class Handler(BaseHTTPRequestHandler):
                 "updated": now_iso(),
             }
             save_progress(pr)
+        # 审计：写盘成功才记，**失败（403）不记**——已由上面 return 提前出。
+        audit(who=who, token_hint=_audit_token_hint(self._who_token()),
+              ip=self._client_ip(), act="POST /api/progress",
+              target=name)
         return self._json({"ok": True, "name": name, "who": who, "offset": offset})
 
     # ---- notes ----
@@ -1000,16 +1122,26 @@ class Handler(BaseHTTPRequestHandler):
                 }
                 hl_list.append(new_h)
                 save_notes(nt)
-                return self._json({"ok": True, "id": new_h["id"], "created": True})
-            # 更新：保留 thread 与 created；其它字段覆盖
-            target["start"] = start
-            target["end"] = end
-            target["text"] = text[:HIGHLIGHT_TEXT_MAX]
-            target["style"] = style
-            target["color"] = color
-            target["chapter"] = chapter
-            save_notes(nt)
-            return self._json({"ok": True, "id": target["id"], "created": False})
+                audit_extra = "created"
+                audit_target_id = new_h["id"]
+            else:
+                # 更新：保留 thread 与 created；其它字段覆盖
+                target["start"] = start
+                target["end"] = end
+                target["text"] = text[:HIGHLIGHT_TEXT_MAX]
+                target["style"] = style
+                target["color"] = color
+                target["chapter"] = chapter
+                save_notes(nt)
+                audit_extra = "updated"
+                audit_target_id = target["id"]
+        # 审计放外面：audit() 内部也要 _lock，**同一线程重入会死锁**。
+        audit(who=who, token_hint=_audit_token_hint(self._who_token()),
+              ip=self._client_ip(), act="POST /api/notes/highlight",
+              target="%s#%s" % (name, audit_target_id),
+              extra=audit_extra)
+        return self._json({"ok": True, "id": audit_target_id,
+                            "created": (audit_extra == "created")})
 
     def _api_notes_comment(self):
         """POST /api/notes/comment —— 往一条划线追加批注。
@@ -1086,7 +1218,12 @@ class Handler(BaseHTTPRequestHandler):
             thread.append(item)
             target["thread"] = thread
             save_notes(nt)
-            return self._json({"ok": True, "id": hid, "count": len(thread)})
+        # 审计：写盘成功才记（403 在前面已 return 拒绝）
+        audit(who=true_who, token_hint=_audit_token_hint(self._who_token()),
+              ip=self._client_ip(), act="POST /api/notes/comment",
+              target="%s#%s" % (name, hid),
+              extra="index=%d" % (len(thread) - 1))
+        return self._json({"ok": True, "id": hid, "count": len(thread)})
 
     def _api_notes_highlight_delete(self):
         """DELETE /api/notes/highlight?name=xxx&id=xxx —— 删一条划线（带 thread）。"""
@@ -1170,6 +1307,11 @@ class Handler(BaseHTTPRequestHandler):
             item["text"] = text[:COMMENT_CHARS_HARD_MAX]
             # 不动 who / name / at —— 改的是话本身
             save_notes(nt)
+        # 审计：写盘成功才记（403 已在前面 return 拒绝）
+        audit(who=who, token_hint=_audit_token_hint(self._who_token()),
+              ip=self._client_ip(), act="POST /api/notes/comment/edit",
+              target="%s#%s" % (name, hid),
+              extra="index=%d" % index)
         return self._json({"ok": True, "id": hid, "index": index, "count": len(thread)})
 
     def _api_notes_comment_delete(self):
@@ -1218,6 +1360,11 @@ class Handler(BaseHTTPRequestHandler):
             del thread[index]
             target["thread"] = thread
             save_notes(nt)
+        # 审计：写盘成功才记（403 已在前面 return 拒绝）
+        audit(who=who, token_hint=_audit_token_hint(self._who_token()),
+              ip=self._client_ip(), act="POST /api/notes/comment/delete",
+              target="%s#%s" % (name, hid),
+              extra="index=%d" % index)
         return self._json({"ok": True, "id": hid, "count": len(thread)})
 
     def _api_notes_export(self):
