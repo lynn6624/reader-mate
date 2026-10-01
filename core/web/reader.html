@@ -257,6 +257,21 @@
   #hlPanel .cm .who.user{color:var(--fg)}
   #hlPanel .cm .at{color:var(--dim); font-size:11px; margin-left:6px}
   #hlPanel .cm .tx{white-space:pre-wrap; word-break:break-word}
+  /* 单条批注的改/删按钮：放在 who 行右侧；inline-block 让它在 who 标签里贴齐 */
+  #hlPanel .cmActs{
+    display:inline-block; margin-left:8px; float:right;
+  }
+  #hlPanel .cmActBtn{
+    border:1px solid var(--line); background:var(--card); color:var(--fg);
+    border-radius:5px; padding:1px 7px; cursor:pointer; font-size:11px;
+    font-family:inherit; line-height:1.55; margin-left:3px;
+  }
+  #hlPanel .cmActBtn:hover{border-color:var(--accent); color:var(--accent)}
+  #hlPanel .cmActBtn[data-act="del"]:hover{color:#c0392b; border-color:#c0392b}
+  /* 编辑中：保留原 prompt 与提交框，淡紫背景标识；输入框宽度 100% */
+  #hlPanel .cm.editing{
+    border-color:var(--accent); background:rgba(154,107,63,.06);
+  }
   #hlPanel .empty{color:var(--dim); font-size:12.5px; padding:6px 4px}
   #hlPanel .inputBox{
     border-top:1px solid var(--line); padding:10px 12px;
@@ -294,6 +309,13 @@
   #libTabs .t.on{background:var(--bg); color:var(--accent); border:1px solid var(--line)}
   #libTabs .t:hover{color:var(--accent)}
   .idxList, .excList{padding:2px 0}
+  .idxGroup{margin-bottom:14px}
+  .idxGroupTitle{
+    font-size:13px; font-weight:700; color:var(--accent);
+    padding:4px 4px 6px; margin:0 0 4px;
+    border-bottom:1px dashed var(--line);
+    font-family:system-ui,"Microsoft YaHei",sans-serif;
+  }
   .idxList .item{
     border:1px solid var(--line); border-radius:9px; padding:9px 11px; margin-bottom:8px;
     background:var(--bg);
@@ -333,6 +355,29 @@
     margin-bottom:9px; width:100%;
   }
   .excExport:hover{border-color:var(--accent); color:var(--accent)}
+
+/* 书库抽屉底部：当前身份 + 切换入口。窄屏也跟着抽屉走，不挤顶栏。 */
+#libFooter{
+  border-top:1px solid var(--line); padding:10px 12px;
+  font-family:system-ui,"Microsoft YaHei",sans-serif; font-size:12.5px;
+  color:var(--dim); background:var(--bg);
+}
+#libFooter .whoRow{margin-bottom:6px}
+#libFooter .whoRow b{
+  color:var(--accent); font-weight:600;
+  font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;
+  font-size:13px;
+}
+#libFooter .whoSwitch{display:flex; gap:6px; margin-bottom:4px}
+#libFooter #whoInput{
+  flex:1; min-width:0; padding:6px 8px; font-size:12.5px;
+  border:1px solid var(--line); border-radius:7px;
+  background:var(--card); color:var(--fg); outline:none;
+  font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;
+}
+#libFooter #whoInput:focus{border-color:var(--accent)}
+#libFooter .whoHint{font-size:11px; color:var(--dim); line-height:1.6}
+#libFooter .btn{padding:5px 11px; font-size:12.5px}
 </style>
 </head>
 <body>
@@ -400,6 +445,14 @@
   <div class="body" id="libList"></div>
   <div class="body" id="idxList" style="display:none"></div>
   <div class="body" id="excList" style="display:none"></div>
+  <div class="libFooter" id="libFooter">
+    <div class="whoRow">当前身份：<b id="libWho">user</b></div>
+    <div class="whoSwitch">
+      <input id="whoInput" type="text" maxlength="32" placeholder="切到另一个身份" autocomplete="off">
+      <button class="btn primary" id="btnWhoSwitch">切换</button>
+    </div>
+    <div class="whoHint">仅数字字母下划线连字符，≤32。同一台机器多身份会互相独立落进度。</div>
+  </div>
 </aside>
 
 <aside id="searchPanel">
@@ -426,6 +479,7 @@
 <aside id="hlPanel">
   <header>
     <b id="hlPanelTitle">批注</b>
+    <button class="ibtn" id="btnDelHighlight" title="删除这条划线（连带批注）" style="color:#c0392b">×划线</button>
     <button class="ibtn" id="btnCloseHlPanel">×</button>
   </header>
   <div class="qbox" id="hlPanelQuote"></div>
@@ -470,6 +524,44 @@ function getToken(){
 }
 pickUpTokenFromUrl();
 
+/* ---------------- 身份 who ----------------
+ * 默认 "user"；URL 上带 ?who=xxx 时读出并写进 localStorage（不抹掉，
+ * 便于复壳直接锁定身份——书签、桌面快捷方式都能照搬）。
+ * 后端启动时也是默认 user；多身份通过同一端口同一后端混着存。
+ * 校验只留数字字母下划线连字符，长度 32；不合法回落 user。
+ * 不传 who 时端不校验身份，但 progress 仍归在 user 名下——这是默认兜底。 */
+const RM_WHO_KEY = "rm_who";
+function normWhoName(s){
+  s = String(s || "");
+  s = s.replace(/[^A-Za-z0-9_-]/g, "");
+  if (s.length > 32) s = s.slice(0, 32);
+  return s;
+}
+function pickUpWhoFromUrl(){
+  try {
+    const u = new URL(location.href);
+    const raw = (u.searchParams.get("who") || "").trim();
+    if (!raw) return "";
+    const w = normWhoName(raw);
+    if (!w) return "";
+    try { localStorage.setItem(RM_WHO_KEY, w); } catch (e) {}
+    return w;
+  } catch (e) { return ""; }
+}
+function getWho(){
+  try {
+    const stored = localStorage.getItem(RM_WHO_KEY);
+    const w = normWhoName(stored || "");
+    if (w) return w;
+  } catch (e) {}
+  return "user";
+}
+function setWho(w){
+  w = normWhoName(w) || "user";
+  try { localStorage.setItem(RM_WHO_KEY, w); } catch (e) {}
+  return w;
+}
+
 /* ---- 页面级报错兜底：出错就把原因摆在屏幕底部，便于截图反馈 ---- */
 function showErr(msg){
   let d = document.getElementById("errbar");
@@ -502,6 +594,7 @@ const state = {
   lastMarked: null,
   booksDir: "",        // 由后端 /api/books 的 dir 字段填，别在前端硬写盘符
   ttsOffset: 0,        // 朗读位置（字符偏移）。与 state.currentSeg 是两套进度，互不覆盖。
+  who: "user",         // 当前身份（默认 user；URL/localStorage 决定）—— 决定进度读写走哪个身份
 };
 
 /* ---------------- 带鉴权的 fetch 包装 ----------------
@@ -645,6 +738,7 @@ function payload(){
   // offset = 眼睛位置（跟 state.currentSeg 走）；tts_offset = 嘴位置（独立字段，互不覆盖）
   return {
     name: state.book.name,
+    who: state.who,                                // 进度身份：按当前身份落，不互相覆盖
     offset: seg.start,
     chars,
     percent: chars ? seg.start / chars : 0,
@@ -668,9 +762,13 @@ function saveNow(){
 window.addEventListener("beforeunload", () => {
   if (!state.book) return;
   try {
-    // sendBeacon 无法自定义请求头；只能把 token 拼到 URL 上做后备
+    // sendBeacon 无法自定义请求头；只能把 token 与身份拼到 URL 上做后备
     const tk = getToken();
-    const url = tk ? "/api/progress?token=" + encodeURIComponent(tk) : "/api/progress";
+    const q = [];
+    if (tk) q.push("token=" + encodeURIComponent(tk));
+    if (state.who) q.push("who=" + encodeURIComponent(state.who));
+    const url = q.length ? "/api/progress?" + q.join("&") : "/api/progress";
+    // body 里也写一份 who——后端 POST /api/progress 既认 query 也认 body，谁先到都成
     navigator.sendBeacon(url,
       new Blob([JSON.stringify(payload())], { type: "application/json" }));
   } catch (e) {}
@@ -1209,17 +1307,61 @@ function ttsInit(){
 }
 
 /* ---------------- 打开书 ---------------- */
-async function loadBooks(){
+/* 拉一份"当前身份"的进度：用于 (a) boot 时挑默认开哪本书（A3 跟随身份）；
+ *         (b) 覆盖书库列表里每条的进度条（不让别人的进度混进来）；
+ *         (c) openBook 后用 by_who[who] 覆盖 state.book.progress。
+ * 后端 GET /api/progress?who=xxx 失败时返回空对象——书库/打开仍按兜底走，绝不拦库。 */
+async function fetchWhoProgress(){
+  try {
+    const r = await fetchAuth("/api/progress?who=" + encodeURIComponent(state.who));
+    if (!r.ok) return {};
+    const j = await r.json();
+    return (j && j.progress) || {};
+  } catch (e){ return {}; }
+}
+/* 该身份下"updated 最新"的那本书；若该身份没有任何记录 → 回退到书库第一本。
+ * 注意：要的是 "该身份里最新" 不是 "全库最新"，这样切回别人时不会被弹到别人正在读的书。 */
+function pickDefaultBookName(books, whoProgress){
+  const wm = (state.who || "user");
+  let best = null, bestUpd = "";
+  for (const b of books){
+    const p = whoProgress && whoProgress[b.name];
+    if (!p || typeof p !== "object") continue;
+    const u = p.updated || "";
+    if (!best || u > bestUpd){
+      best = b; bestUpd = u;
+    }
+  }
+  if (best) return best.name;
+  return books.length ? books[0].name : "";
+}
+
+async function loadBooks(whoProgress){
+  whoProgress = whoProgress || {};
   const r = await fetchAuth("/api/books");
   const j = await r.json();
   state.booksDir = j.dir || "";
+  // 把该身份的进度叠到每本书上（覆盖后端的 user 兜底）
+  const books = (j.books || []).map(b => {
+    const p = whoProgress[b.name];
+    if (p && typeof p === "object"){
+      return Object.assign({}, b, {
+        offset: p.offset || 0,
+        percent: p.percent || 0,
+        chapter: p.chapter || "",
+        read_at: p.updated || "",
+      });
+    }
+    return b;
+  });
   const list = $("#libList");
-  if (!j.books || !j.books.length){
+  if (!books.length){
     list.innerHTML = '<div class="hint">书库还是空的。<br>点上面的「＋ 导入 txt」，或者直接把 txt 拖进这个窗口。</div>';
-    return j.books || [];
+    renderLibFooter();
+    return books;
   }
   list.innerHTML = "";
-  for (const b of j.books){
+  for (const b of books){
     const d = document.createElement("div");
     d.className = "book";
     const pctv = Math.round((b.percent || 0) * 1000) / 10;
@@ -1240,11 +1382,36 @@ async function loadBooks(){
       const jj = await rr.json();
       toast(jj.ok ? "已删除" : (jj.error || "删除失败"));
       if (state.book && state.book.name === b.name){ state.book = null; showEmpty(); }
-      loadBooks();
+      // 切回 user 兜底刷新（删避免连带这个身份的进度）
+      const wp = await fetchWhoProgress();
+      loadBooks(wp);
     });
     list.appendChild(d);
   }
-  return j.books;
+  renderLibFooter();   // 顺带刷新底部身份显示
+  return books;
+}
+
+/* 书库底部：显示当前身份 + 切换身份入口。点切换按钮 → 写 localStorage，
+ * 刷新页面让 boot 重新挑默认书。简单粗暴但绝不会出现"切了，UI 没跟上"的坑。 */
+function renderLibFooter(){
+  const el = $("#libWho");
+  if (el) el.textContent = state.who || "user";
+  const inp = $("#whoInput");
+  if (inp && inp.value !== state.who) inp.value = state.who || "";
+}
+function switchWhoFromForm(){
+  const inp = $("#whoInput");
+  if (!inp) return;
+  const w = normWhoName(inp.value);
+  if (!w){ toast("身份名不合法（数字字母下划线连字符，≤32）"); return; }
+  if (w === state.who){ toast("已经是这个身份了"); return; }
+  setWho(w);
+  state.who = w;
+  renderLibFooter();
+  toast("已切换到「" + w + "」，正在刷新…", 1100);
+  // 切身份后立刻刷页面，boot 重选默认书 + 拿该身份的进度 + 索引（清空旧缓存）
+  setTimeout(() => location.reload(), 700);
 }
 
 async function openBook(name){
@@ -1254,13 +1421,22 @@ async function openBook(name){
   const r = await fetchAuth("/api/book?name=" + encodeURIComponent(name));
   const j = await r.json();
   if (!j.ok){ toast(j.error || "打不开"); return; }
-  state.book = j;
+  // 进度按身份选；该身份没有就回退到后端给的 user 兜底，再没有就空。
+  // by_who 是后端规范后的 {身份: 进度}；取不到就原样用 j.progress（向后兼容旧字段）。
+  let prog = {};
+  const wm = state.who || "user";
+  if (j.by_who && typeof j.by_who === "object" && j.by_who[wm] && typeof j.by_who[wm] === "object"){
+    prog = j.by_who[wm];
+  } else if (j.progress && typeof j.progress === "object"){
+    prog = j.progress;
+  }
+  state.book = Object.assign({}, j, { progress: prog });
   state.segs = splitSegments(j.text);
   state.els = []; state.rendered = 0; state.currentSeg = 0;
   reader.innerHTML = "";
   $("#bkTitle").textContent = j.name.replace(/\.txt$/i, "");
   renderMore(300);
-  const off = (j.progress && j.progress.offset) || 0;
+  const off = (prog && prog.offset) || 0;
   if (off > 0){
     const idx = segIndexAtOffset(off);
     ensureRendered(idx + 2);
@@ -1276,7 +1452,7 @@ async function openBook(name){
   if (typeof switchLibTab === "function") switchLibTab("lib");
   loadHighlights(j.name);
   // 续听：拉一下后端回来的 tts_offset，若 > 0 在朗读条上露提示
-  state.ttsOffset = (j.progress && j.progress.tts_offset) || 0;
+  state.ttsOffset = (prog && prog.tts_offset) || 0;
   ttsShowResumeHint();
   closePanels();
 }
@@ -1355,7 +1531,12 @@ function jumpTo(offset, q){
 }
 
 /* ---------------- 面板 ---------------- */
-function openLib(){ $("#libPanel").classList.add("on"); $("#mask").classList.add("on"); loadBooks(); }
+async function openLib(){
+  $("#libPanel").classList.add("on"); $("#mask").classList.add("on");
+  // 也带该身份的进度——不然书库列表的进度条会被 user 那份盖掉
+  const wp = await fetchWhoProgress();
+  loadBooks(wp);
+}
 function openSearch(){
   $("#searchPanel").classList.add("on"); $("#mask").classList.add("on");
   if (!state.book){ $("#hits").innerHTML = '<div class="hint">先打开一本书再搜。</div>'; }
@@ -1390,7 +1571,15 @@ $("#btnLib").addEventListener("click", openLib);
 $("#btnSearch").addEventListener("click", openSearch);
 $("#btnCloseSearch").addEventListener("click", closePanels);
 $("#mask").addEventListener("click", closePanels);
-$("#btnReload").addEventListener("click", () => { loadBooks().then(() => toast("书库已刷新")); });
+$("#btnReload").addEventListener("click", async () => {
+  const wp = await fetchWhoProgress();
+  loadBooks(wp).then(() => toast("书库已刷新"));
+});
+$("#btnWhoSwitch").addEventListener("click", switchWhoFromForm);
+$("#whoInput").addEventListener("keydown", e => {
+  if (e.key === "Enter"){ e.preventDefault(); switchWhoFromForm(); }
+  else if (e.key === "Escape"){ e.target.value = state.who || ""; }
+});
 $("#fileInput").addEventListener("change", e => { importFiles(e.target.files); e.target.value = ""; });
 $("#q").addEventListener("keydown", e => { if (e.key === "Enter") runSearch($("#q").value.trim()); });
 $("#btnFontInc").addEventListener("click", () => { pref.size = Math.min(34, pref.size + 1); localStorage.setItem("r_size", pref.size); applyPref(); });
@@ -1609,6 +1798,7 @@ async function doHighlight(kind){
         id: serverId, start: info.start, end: info.end, text: info.text,
         style, chapter, thread: [],
       });
+      invalidateIndex();   // 索引页要看到新划线
       if (kind === "note"){
         // 直接弹批注面板
         const h = notesCache.list[notesCache.list.length - 1];
@@ -1843,6 +2033,141 @@ function openHlPanel(h){
     $("#hlFullHint").style.display = "";
   }
 }
+
+/* 删除这条划线（带 thread）—— 先 confirm，再 DELETE /api/notes/highlight。
+ * 成功后从 notesCache 移、DOM 里把所有 data-hl-id 匹配的 mark 拆掉、
+ * 刷新索引/摘抄本（同时让 idxCache 失效，下次切 tab 重拉）。 */
+async function delCurrentHighlight(){
+  const hid = $("#hlPanel").dataset.hlId;
+  if (!hid) return;
+  const h = notesCache.list.find(x => x.id === hid);
+  if (!h) return;
+  const quote = (h.text || "").slice(0, 30);
+  if (!confirm("把这条划线删掉（连" + (h.thread ? h.thread.length : 0) +
+               "条批注一起）？\n「" + quote + "…」")) return;
+  try {
+    const r = await fetchAuth("/api/notes/highlight?name=" + encodeURIComponent(state.book.name) +
+                              "&id=" + encodeURIComponent(hid), { method: "DELETE" });
+    const j = await r.json().catch(function(){ return { ok: r.ok }; });
+    if (!r.ok || !j.ok){ toast((j && j.error) || ("删除失败：" + r.status)); return; }
+    // 删本地缓存
+    notesCache.list = notesCache.list.filter(x => x.id !== hid);
+    // 拆 DOM 里的 mark（多处标 data-hl-id）
+    document.querySelectorAll('mark[data-hl-id="' + (hid || "").replace(/"/g, '\\"') + '"]').forEach(m => {
+      const p = m.parentNode;
+      while (m.firstChild) p.insertBefore(m.firstChild, m);
+      p.removeChild(m);
+      p.normalize();
+    });
+    invalidateIndex();
+    // 关面板
+    closeHlPanel();
+    toast("已删除");
+    // 刷新抽屉里面板的可见视图
+    if (libTab === "idx") renderIndex();
+    else if (libTab === "exc") renderExcerpt();
+  } catch (e){ toast("删除失败——后端多半掉了，重新打开阅读器再试", 4000); }
+}
+
+/* 改批注（按 thread 索引）：把那条 .cm 就地变成输入框 → 保存调 comment/edit。 */
+function startEditComment(cmEl, idx){
+  const hid = $("#hlPanel").dataset.hlId;
+  const h = notesCache.list.find(x => x.id === hid);
+  if (!h || !h.thread || !h.thread[idx]) return;
+  const cur = h.thread[idx].text || "";
+  cmEl.classList.add("editing");
+  cmEl.innerHTML = "";
+  const ta = document.createElement("textarea");
+  ta.value = cur;
+  ta.style.cssText = "width:100%;min-height:54px;max-height:160px;resize:vertical;" +
+    "border:1px solid var(--line);border-radius:6px;padding:7px 9px;" +
+    "font-family:inherit;font-size:13px;line-height:1.55;background:var(--bg);color:var(--fg);outline:none;";
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex;gap:6px;margin-top:6px;align-items:center";
+  const wLbl = document.createElement("span");
+  wLbl.style.cssText = "font-size:11.5px;color:var(--dim);font-variant-numeric:tabular-nums";
+  const btnSave = document.createElement("button");
+  btnSave.className = "btn primary";
+  btnSave.textContent = "保存";
+  btnSave.style.padding = "5px 11px";
+  btnSave.style.fontSize = "12.5px";
+  const btnCancel = document.createElement("button");
+  btnCancel.className = "btn";
+  btnCancel.textContent = "取消";
+  btnCancel.style.padding = "5px 11px";
+  btnCancel.style.fontSize = "12.5px";
+  row.appendChild(wLbl); row.appendChild(btnSave); row.appendChild(btnCancel);
+  cmEl.appendChild(ta); cmEl.appendChild(row);
+  setTimeout(() => ta.focus(), 30);
+  function updateWeight(){
+    const w = weightOf(ta.value);
+    wLbl.textContent = "还能写 " + Math.max(0, 300 - w) + "（已用 " + w + "/300）";
+    btnSave.disabled = (w > 300);
+  }
+  ta.addEventListener("input", updateWeight);
+  updateWeight();
+  btnCancel.addEventListener("click", () => { renderHlThread(h.thread); });
+  ta.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); doSave(); }
+    else if (e.key === "Escape"){ renderHlThread(h.thread); }
+  });
+  btnSave.addEventListener("click", doSave);
+  async function doSave(){
+    const text = (ta.value || "").trim();
+    if (!text){ toast("批注不能为空"); return; }
+    const w = weightOf(text);
+    if (w > 300){ toast("批注太长：约 " + Math.ceil(w/2) + " 个汉字 / 上限 150"); return; }
+    btnSave.disabled = true; btnCancel.disabled = true;
+    try {
+      const r = await fetchAuth("/api/notes/comment/edit", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: state.book.name, id: hid, index: idx, text }),
+      });
+      const j = await r.json();
+      if (j.ok){
+        h.thread[idx].text = text;
+        invalidateIndex();
+        renderHlThread(h.thread);
+        if (libTab === "idx") renderIndex();
+        else if (libTab === "exc") renderExcerpt();
+        toast("已保存");
+      } else {
+        toast(j.error || "保存失败");
+        btnSave.disabled = false; btnCancel.disabled = false;
+      }
+    } catch (e){ toast("保存失败——后端多半掉了，重新打开阅读器再试", 4000); btnSave.disabled = false; btnCancel.disabled = false; }
+  }
+}
+
+/* 删一条批注：确认后调 comment/delete，刷新 thread + 索引。 */
+async function delComment(idx){
+  const hid = $("#hlPanel").dataset.hlId;
+  const h = notesCache.list.find(x => x.id === hid);
+  if (!h || !h.thread || !h.thread[idx]) return;
+  const cur = (h.thread[idx].text || "").slice(0, 30);
+  if (!confirm("删掉这条批注？\n「" + cur + "…」")) return;
+  try {
+    const r = await fetchAuth("/api/notes/comment/delete", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: state.book.name, id: hid, index: idx }),
+    });
+    const j = await r.json();
+    if (!j.ok){ toast(j.error || "删除失败"); return; }
+    h.thread.splice(idx, 1);
+    invalidateIndex();
+    renderHlThread(h.thread);
+    // 输入框重新启用（之前可能因满 12 条被锁）
+    if (h.thread.length < 12){
+      $("#hlInput").disabled = false;
+      $("#hlSend").disabled = false;
+      $("#hlPanelInput").style.display = "";
+      $("#hlFullHint").style.display = "none";
+    }
+    if (libTab === "idx") renderIndex();
+    else if (libTab === "exc") renderExcerpt();
+    toast("已删除");
+  } catch (e){ toast("删除失败——后端多半掉了，重新打开阅读器再试", 4000); }
+}
 function closeHlPanel(){
   $("#hlPanel").classList.remove("on");
   delete $("#hlPanel").dataset.hlId;
@@ -1854,7 +2179,8 @@ function renderHlThread(thread){
     box.innerHTML = '<div class="empty">还没有批注——在上面写两句吧。</div>';
     return;
   }
-  for (const c of thread){
+  for (let idx = 0; idx < thread.length; idx++){
+    const c = thread[idx];
     const d = document.createElement("div");
     d.className = "cm";
     const who = c.who || "user";
@@ -1862,9 +2188,19 @@ function renderHlThread(thread){
       ? ((c.name || "ai") + " 说")
       : "你说";
     const at = c.at || "";
+    // 改/删按钮：放在 .meta 行；不分身份都允许（私有工具）
     d.innerHTML = '<div class="who ' + who + '">' + esc(whoLabel) +
-                  (c.at ? '<span class="at">' + esc(c.at) + '</span>' : '') + '</div>' +
+                  (c.at ? '<span class="at">' + esc(c.at) + '</span>' : '') +
+                  '<span class="cmActs">' +
+                    '<button class="cmActBtn" data-act="edit">改</button>' +
+                    '<button class="cmActBtn" data-act="del">删</button>' +
+                  '</span></div>' +
                   '<div class="tx">' + esc(c.text || "") + '</div>';
+    // 用闭包把 idx 钉死
+    const btnEdit = d.querySelector('[data-act="edit"]');
+    const btnDel  = d.querySelector('[data-act="del"]');
+    btnEdit.addEventListener("click", () => startEditComment(d, idx));
+    btnDel.addEventListener("click",  () => delComment(idx));
     box.appendChild(d);
   }
   box.scrollTop = box.scrollHeight;
@@ -1882,6 +2218,7 @@ $("#hlInput").addEventListener("keydown", e => {
 });
 $("#hlSend").addEventListener("click", submitComment);
 $("#btnCloseHlPanel").addEventListener("click", closeHlPanel);
+$("#btnDelHighlight").addEventListener("click", delCurrentHighlight);
 
 async function submitComment(){
   const hid = $("#hlPanel").dataset.hlId;
@@ -1905,6 +2242,7 @@ async function submitComment(){
       if (h){
         (h.thread = h.thread || []).push({ who: "user", text, at: j.at || new Date().toISOString() });
         renderHlThread(h.thread);
+        invalidateIndex();         // 全表索引页也要新（批注条数变了）
         if (h.thread.length >= 12){
           $("#hlInput").disabled = true;
           $("#hlSend").disabled = true;
@@ -1940,33 +2278,92 @@ function switchLibTab(tab){
   if (tab === "idx") renderIndex();
   else if (tab === "exc") renderExcerpt();
 }
+/* 索引全表缓存：{fetchedAt: 0, books: {name: [highlights]}}
+ * 切 tab 在 A2 重新打开不会重发请求，但批注改/删后要 invalidateIndex() 强制刷新。 */
+const idxCache = { fetchedAt: 0, books: null };
+function invalidateIndex(){ idxCache.fetchedAt = 0; idxCache.books = null; }
+
+async function loadIndexAll(){
+  const r = await fetchAuth("/api/notes");   // 不带 name = 全表
+  if (!r.ok){ throw new Error("HTTP " + r.status); }
+  const j = await r.json();
+  return (j && j.books) || {};
+}
+
 function renderIndex(){
   const out = $("#idxList");
   out.innerHTML = "";
+  // 当前没打开书也给提示，但仍然会去拉全表
   if (!state.book){
-    out.innerHTML = '<div class="empty">先打开一本书。</div>';
-    return;
+    out.innerHTML = '<div class="empty">先去书库选一本打开。</div>';
   }
-  if (!notesCache.list.length){
-    out.innerHTML = '<div class="empty">这本书还没有划线。<br>在书页里选一段文字试试。</div>';
-    return;
-  }
-  const sorted = notesCache.list.slice().sort((a, b) => (a.start || 0) - (b.start || 0));
-  const wrap = document.createElement("div");
-  wrap.className = "idxList";
-  for (const h of sorted){
-    const q = (h.text || "").trim();
-    const preview = q.length > 90 ? q.slice(0, 90) + "…" : q;
-    const cnt = (h.thread || []).length;
-    const div = document.createElement("div");
-    div.className = "item";
-    div.innerHTML = '<div class="q">' + esc(preview) + '</div>' +
-      '<div class="meta"><span>' + (h.chapter ? esc(h.chapter) + " · " : "") + cnt + ' 条批注</span>' +
-      '<button data-jump="' + esc(h.id) + '">跳回原文</button></div>';
-    div.querySelector("button").addEventListener("click", () => jumpToHighlight(h));
-    wrap.appendChild(div);
-  }
-  out.appendChild(wrap);
+  // 显示 loading
+  const loading = document.createElement("div");
+  loading.className = "empty";
+  loading.textContent = "载入中…";
+  out.appendChild(loading);
+  // 用缓存避免每次切 tab 都重发请求（10 秒内复用）
+  const now = Date.now();
+  const fresh = idxCache.books && (now - idxCache.fetchedAt < 10000);
+  const after = fresh
+    ? Promise.resolve(idxCache.books)
+    : loadIndexAll().then(function(books){
+        idxCache.books = books;
+        idxCache.fetchedAt = Date.now();
+        return books;
+      });
+  after.then(function(booksByName){
+    out.innerHTML = "";
+    // 全库都没划线
+    let totalCount = 0;
+    const names = Object.keys(booksByName || {});
+    for (const n of names){
+      const hl = (booksByName[n] && booksByName[n].highlights) || [];
+      totalCount += hl.length;
+    }
+    if (!totalCount){
+      const e = document.createElement("div");
+      e.className = "empty";
+      e.textContent = state.book
+        ? "这本书还没有划线，全库也还没人划过。\n在书页里选一段文字试试。"
+        : "全库还没有划线——在书页里选一段文字试试。";
+      e.style.whiteSpace = "pre-wrap";
+      out.appendChild(e);
+      return;
+    }
+    // 当前书没删 → 也照样渲染全表（题面要求）
+    for (const name of names){
+      const entry = booksByName[name] || {};
+      const hl = entry.highlights || [];
+      if (!hl.length) continue;
+      const grp = document.createElement("div");
+      grp.className = "idxGroup";
+      const titleText = name.replace(/\.txt$/i, "");
+      grp.innerHTML = '<div class="idxGroupTitle">' + esc(titleText) +
+        (state.book && state.book.name === name ? '（当前页）' : '') + '</div>';
+      const list = document.createElement("div");
+      list.className = "idxList";
+      const sorted = hl.slice().sort((a, b) => (a.start || 0) - (b.start || 0));
+      for (const h of sorted){
+        const q = (h.text || "").trim();
+        const preview = q.length > 90 ? q.slice(0, 90) + "…" : q;
+        const cnt = (h.thread || []).length;
+        const div = document.createElement("div");
+        div.className = "item";
+        // 给 highlight 加 bookName 字段，jumpToHighlight 才知道要打开哪本
+        const item = Object.assign({}, h, { bookName: name });
+        div.innerHTML = '<div class="q">' + esc(preview) + '</div>' +
+          '<div class="meta"><span>' + (h.chapter ? esc(h.chapter) + " · " : "") + cnt + ' 条批注</span>' +
+          '<button>跳回原文</button></div>';
+        div.querySelector("button").addEventListener("click", () => jumpToHighlight(item));
+        list.appendChild(div);
+      }
+      grp.appendChild(list);
+      out.appendChild(grp);
+    }
+  }).catch(function(e){
+    out.innerHTML = '<div class="empty">索引拉不到：' + esc((e&&e.message)||'失败') + '</div>';
+  });
 }
 function renderExcerpt(){
   const out = $("#excList");
@@ -2030,6 +2427,20 @@ function renderExcerpt(){
   out.appendChild(wrap);
 }
 function jumpToHighlight(h){
+  if (!h) return;
+  const targetName = h.bookName || (state.book && state.book.name);
+  if (!targetName) return;
+  // 跨书：先打开那本，再做跳转。openBook 完成后调真正的 jump。
+  if (!state.book || state.book.name !== targetName){
+    openBook(targetName).then(() => {
+      // 抽屉已自动关闭；再调一次真正的跳
+      doJumpToHighlight(h);
+    });
+    return;
+  }
+  doJumpToHighlight(h);
+}
+function doJumpToHighlight(h){
   if (!state.book || !h) return;
   const segIdx = segIndexAtOffset(h.start || 0);
   ensureRendered(segIdx + 2);
@@ -2068,20 +2479,30 @@ async function showBuildTag(){
 
 (async function boot(){
   applyPref();
+  // 身份：URL ?who=xxx 优先；写回 localStorage；旧值不合法回落 user。
+  const urlWho = pickUpWhoFromUrl();
+  state.who = urlWho || getWho();
   await showBuildTag();   // 顺便确定用哪个朗读引擎（拿不到就用系统嗓子）
   // 初始化朗读（不支持环境会在这里走降级分支）
   ttsInit();
   let books = [];
   try {
-    books = await loadBooks();
+    // A3：默认开哪本书跟随身份——先拉该身份的进度，再用它覆盖书库列表与挑默认书
+    const whoProgress = await fetchWhoProgress();
+    books = await loadBooks(whoProgress);
+    if (books.length){
+      const def = pickDefaultBookName(books, whoProgress);
+      if (def) openBook(def);
+      else showEmpty();
+    } else {
+      showEmpty();
+    }
   } catch (e) {
     // 打开页面时后端就没在跑（手机常干这事）：给个空页 + 上面那条能照做的提示，
     // 别让页面彻底白着、也别只丢一句"Promise 未捕获"。
     showEmpty();
     return;
   }
-  if (books.length) openBook(books[0].name);
-  else showEmpty();
 })();
 </script>
 </body>

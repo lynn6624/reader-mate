@@ -272,12 +272,25 @@ def load_library() -> dict:
 
 
 def load_progress() -> dict:
+    """读 progress.json，懒兼容老格式（books[name] 是单份进度而不是 {身份: 进度}）。
+
+    老文件**不动**——只在内存里规范成新形状，下次保存才升到 {身份: 进度} 形态。
+    """
     pr = load_json(PROGRESS_FILE, {})
     if not isinstance(pr, dict):
         pr = {}
     pr.setdefault("version", 1)
     pr.setdefault("updated", now_iso())
     pr.setdefault("books", {})
+    books = pr["books"]
+    if not isinstance(books, dict):
+        pr["books"] = {}
+        return pr
+    # 内存里把所有书的进度规范成 {身份: 进度}——不动 PROGRESS_FILE
+    norm = {}
+    for name, d in books.items():
+        norm[name] = book_progress(d)
+    pr["books"] = norm
     return pr
 
 
@@ -295,6 +308,41 @@ COMMENT_CHARS_HARD_MAX = 600  # 字符数硬上限（只用于读旧数据时的
 THREAD_MAX = 12             # 每条划线 thread 上限（= 6 轮来回）
 CHAPTER_MAX = 80
 NAME_AI_MAX = 32
+WHO_MAX = 32
+WHO_RE = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def norm_who(s) -> str:
+    """把 who 字段清洗成合法身份字符串。
+
+    规则：只保留 [A-Za-z0-9_-]、长度上限 WHO_MAX；清洗后为空则回落 "user"。
+    """
+    if s is None:
+        return "user"
+    cleaned = WHO_RE.sub("", str(s)).strip()[:WHO_MAX]
+    return cleaned or "user"
+
+
+def book_progress(d) -> dict:
+    """把 books[name] 的「老/新」两种形状都规范成 {身份: 进度}。
+
+    老形状：name 直接含 offset/updated 等字段 → 视作 {"user": 那一份}
+    新形状：已经是 {身份: 进度} → 过滤掉非字典身份项后原样返回
+    这层规范化**只在内存里做**，不动 progress.json 文件本体；
+    下一次保存时新版才会以 {身份: 进度} 形态落盘——安全、自然迁移。
+    """
+    if not isinstance(d, dict):
+        return {"user": {}}
+    # 老形状识别：有 offset/percent/updated 等"进度字段"在**最外层** → 视为单身份（user）
+    flat_keys = {"offset", "percent", "chars", "chapter", "anchor",
+                 "tts_offset", "updated"}
+    if any(k in d for k in flat_keys):
+        return {"user": dict(d)}
+    out = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            out[norm_who(k)] = v
+    return out or {"user": {}}
 
 
 def text_weight(s: str) -> int:
@@ -428,20 +476,29 @@ def scan_books() -> dict:
 
 
 def write_progress_md(pr: dict, lib: dict):
-    """给人/给 AI 一眼看的表格版。正本仍是 progress.json。"""
+    """给人/给 AI 一眼看的表格版。正本仍是 progress.json。
+
+    同一本书的不同身份各占一行（按 updated 倒序），方便一眼看清「书商读到哪里、001 读到哪里」。
+    """
     def cell(s, limit=48):
         s = re.sub(r"\s+", " ", str(s or "")).replace("|", "｜").strip()
         return (s[:limit] + "…") if len(s) > limit else (s or "—")
 
+    # 展平成 (name, who, p, updated) 列表，再整体按 updated 倒序
+    flat = []
+    for name, by_who in (pr.get("books") or {}).items():
+        for who, prog in (by_who or {}).items():
+            flat.append((name, who, prog, prog.get("updated") or ""))
+    flat.sort(key=lambda t: t[3], reverse=True)
+
     rows = []
-    for name, p in sorted((pr.get("books") or {}).items(),
-                          key=lambda kv: kv[1].get("updated") or "", reverse=True):
+    for name, who, p, _u in flat:
         entry = (lib.get("books") or {}).get(name) or {}
         chars = p.get("chars") or entry.get("chars") or 0
         pct = p.get("percent")
         pct_s = f"{pct * 100:.1f}%" if isinstance(pct, (int, float)) else "—"
-        rows.append("| {} | {} | {}/{} 字 | {} | {} | {} |".format(
-            cell(name, 40), pct_s, p.get("offset", 0), chars,
+        rows.append("| {} | {} | {} | {}/{} 字 | {} | {} | {} |".format(
+            cell(name, 40), cell(who, 20), pct_s, p.get("offset", 0), chars,
             cell(p.get("chapter")), cell(p.get("anchor")), p.get("updated") or "—"))
 
     md = [
@@ -450,16 +507,23 @@ def write_progress_md(pr: dict, lib: dict):
         "> 本文件由 `reader_server.py` 自动生成，**勿手改**；正本是同目录 `progress.json`。",
         "> 更新：{}　｜　书库：`书库/`".format(pr.get("updated") or now_iso()),
         "",
-        "| 书 | 进度 | 字符偏移 | 章节 | 锚文本 | 更新时间 |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| 书 | 身份 | 进度 | 字符偏移 | 章节 | 锚文本 | 更新时间 |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
-    md.extend(rows or ["| （还没有阅读记录） | — | — | — | — | — |"])
+    md.extend(rows or ["| （还没有阅读记录） | — | — | — | — | — | — |"])
     md.append("")
     atomic_write(MD_FILE, "\n".join(md))
 
 
 def save_progress(pr: dict):
+    """写 progress.json 前再做一遍规范化，保证落盘的就是新形状。"""
     pr["updated"] = now_iso()
+    # 把每条 books[name] 收紧成 {身份: 进度}
+    if isinstance(pr.get("books"), dict):
+        norm = {}
+        for name, d in pr["books"].items():
+            norm[name] = book_progress(d)
+        pr["books"] = norm
     dump_json(PROGRESS_FILE, pr)
     write_progress_md(pr, load_library())
 
@@ -564,7 +628,18 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/book":
                 return self._api_book()
             if path == "/api/progress":
-                return self._json({"ok": True, "progress": load_progress()})
+                pr = load_progress()
+                who_raw = (self._query().get("who") or [""])[0]
+                if who_raw:
+                    who = norm_who(who_raw)
+                    out = {}
+                    for name, by_who in (pr.get("books") or {}).items():
+                        # 旧数据读时规范成 {"user": ...}，所以 by_who.get(who) 永远拿得到 user 那份
+                        sub = by_who.get(who)
+                        if isinstance(sub, dict):
+                            out[name] = sub
+                    return self._json({"ok": True, "progress": out, "who": who})
+                return self._json({"ok": True, "progress": pr})
             if path == "/api/notes":
                 return self._api_notes()
             if path == "/api/notes/export":
@@ -628,7 +703,13 @@ class Handler(BaseHTTPRequestHandler):
         pr = load_progress()
         books = []
         for name, b in lib.items():
-            p = (pr.get("books") or {}).get(name) or {}
+            # load_progress 已把 books[name] 规范成 {身份: 进度}
+            by_who = (pr.get("books") or {}).get(name) or {}
+            # 默认兜底取 user 那份；它不存在就取「最近更新的身份」
+            p = by_who.get("user") if isinstance(by_who.get("user"), dict) else None
+            if p is None and by_who:
+                p = max(by_who.values(), key=lambda x: x.get("updated") or "")
+            p = p or {}
             b = dict(b)
             b["offset"] = p.get("offset", 0)
             b["percent"] = p.get("percent", 0)
@@ -649,9 +730,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._err("书库里没有这本书：%s" % name, 404)
         text = read_text(p)
         pr = load_progress()
-        prog = (pr.get("books") or {}).get(name) or {}
+        by_who = (pr.get("books") or {}).get(name) or {}
+        # 默认返 user；都没有就给空
+        prog = by_who.get("user") if isinstance(by_who.get("user"), dict) else {}
         return self._json({"ok": True, "name": name, "text": text,
-                           "chars": len(text), "progress": prog})
+                           "chars": len(text), "progress": prog,
+                           "by_who": by_who})
 
     # ---- POST ----
     def do_DELETE(self):
@@ -681,6 +765,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_notes_highlight()
             if path == "/api/notes/comment":
                 return self._api_notes_comment()
+            if path == "/api/notes/comment/edit":
+                return self._api_notes_comment_edit()
+            if path == "/api/notes/comment/delete":
+                return self._api_notes_comment_delete()
             return self._err("没有这个路径", 404)
         except Exception as e:
             return self._err("服务端出错：%s" % e, 500)
@@ -737,6 +825,8 @@ class Handler(BaseHTTPRequestHandler):
             pct = min(1.0, max(0.0, float(pct)))
         except Exception:
             pct = None
+        # who：默认 user；只保留 [A-Za-z0-9_-] 且 ≤ 32；清洗后空回落 user
+        who = norm_who(data.get("who"))
         with _lock:
             pr = load_progress()
             # tts_offset：给将来 TTS「朗读到哪」留的位置；老条目没这个字段也照常读。
@@ -744,7 +834,16 @@ class Handler(BaseHTTPRequestHandler):
                 tts_offset = max(0, int(data.get("tts_offset") or 0))
             except Exception:
                 tts_offset = 0
-            pr.setdefault("books", {})[name] = {
+            # **绝不覆盖同一本书的其他身份**——这就是要修的那个 bug。
+            books = pr.setdefault("books", {})
+            by_who = books.setdefault(name, {"user": {}})
+            # load_progress 已规范化，这里理论上一定是 {身份: 进度}
+            # 保险起见过一遍：万一 setdefault 拿到的是旧形状（不可能），丢给 book_progress 兜底
+            if not isinstance(by_who, dict) or any(
+                    k in by_who for k in ("offset", "percent", "updated")):
+                by_who = book_progress(by_who)
+                books[name] = by_who
+            by_who[who] = {
                 "offset": offset,
                 "percent": pct if pct is not None else 0,
                 "chars": int(data.get("chars") or 0),
@@ -754,7 +853,7 @@ class Handler(BaseHTTPRequestHandler):
                 "updated": now_iso(),
             }
             save_progress(pr)
-        return self._json({"ok": True, "name": name, "offset": offset})
+        return self._json({"ok": True, "name": name, "who": who, "offset": offset})
 
     # ---- notes ----
     def _api_notes(self):
@@ -921,6 +1020,104 @@ class Handler(BaseHTTPRequestHandler):
                 nt["books"].pop(name, None)
             save_notes(nt)
         return self._json({"ok": True})
+
+    def _api_notes_comment_edit(self):
+        """POST /api/notes/comment/edit —— 改 thread 里某条批注的文本。
+
+        body: {name, id, index, text}
+        校验沿用现有规则：text 非空、按权重 ≤ COMMENT_WEIGHT_MAX（300）。
+        保留原 who / name / at —— 改的是话本身，不是说话人。
+        """
+        raw = self._body()
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except Exception:
+            return self._err("编辑批注请求不是合法 JSON")
+        name = safe_name(data.get("name"))
+        if not name:
+            return self._err("书名不合法")
+        hid = (data.get("id") or "").strip()
+        if not hid:
+            return self._err("划线 id 不能为空")
+        try:
+            index = int(data.get("index"))
+        except Exception:
+            return self._err("index 必须是整数")
+        text = str(data.get("text") or "")
+        if not text:
+            return self._err("批注内容不能为空")
+        w = text_weight(text)
+        if w > COMMENT_WEIGHT_MAX:
+            return self._err(
+                "批注太长：%d/%d（约合 %d 个汉字，上限 150 个汉字左右）"
+                % (w, COMMENT_WEIGHT_MAX, (w + 1) // 2))
+        with _lock:
+            nt = load_notes()
+            book = (nt.get("books") or {}).get(name)
+            if not isinstance(book, dict):
+                return self._err("这本书还没划线：%s" % name, 404)
+            hl_list = book.get("highlights") or []
+            target = None
+            for h in hl_list:
+                if h.get("id") == hid:
+                    target = h
+                    break
+            if target is None:
+                return self._err("找不到这条划线：%s" % hid, 404)
+            thread = target.get("thread") or []
+            if not isinstance(thread, list):
+                thread = []
+            if index < 0 or index >= len(thread):
+                return self._err("index 越界：%d（当前 %d 条）" % (index, len(thread)))
+            item = thread[index]
+            item["text"] = text[:COMMENT_CHARS_HARD_MAX]
+            # 不动 who / name / at —— 改的是话本身
+            save_notes(nt)
+        return self._json({"ok": True, "id": hid, "index": index, "count": len(thread)})
+
+    def _api_notes_comment_delete(self):
+        """POST /api/notes/comment/delete —— 删 thread 里某条批注。
+
+        body: {name, id, index}
+        返回 {"ok": true, "count": <删除后 thread 长度>}。
+        """
+        raw = self._body()
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except Exception:
+            return self._err("删除批注请求不是合法 JSON")
+        name = safe_name(data.get("name"))
+        if not name:
+            return self._err("书名不合法")
+        hid = (data.get("id") or "").strip()
+        if not hid:
+            return self._err("划线 id 不能为空")
+        try:
+            index = int(data.get("index"))
+        except Exception:
+            return self._err("index 必须是整数")
+        with _lock:
+            nt = load_notes()
+            book = (nt.get("books") or {}).get(name)
+            if not isinstance(book, dict):
+                return self._err("这本书还没划线：%s" % name, 404)
+            hl_list = book.get("highlights") or []
+            target = None
+            for h in hl_list:
+                if h.get("id") == hid:
+                    target = h
+                    break
+            if target is None:
+                return self._err("找不到这条划线：%s" % hid, 404)
+            thread = target.get("thread") or []
+            if not isinstance(thread, list):
+                thread = []
+            if index < 0 or index >= len(thread):
+                return self._err("index 越界：%d（当前 %d 条）" % (index, len(thread)))
+            del thread[index]
+            target["thread"] = thread
+            save_notes(nt)
+        return self._json({"ok": True, "id": hid, "count": len(thread)})
 
     def _api_notes_export(self):
         """GET /api/notes/export?name=xxx —— 摘抄本（text/markdown）。"""
