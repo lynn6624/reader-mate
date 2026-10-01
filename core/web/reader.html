@@ -524,6 +524,28 @@ function getToken(){
 }
 pickUpTokenFromUrl();
 
+/* ---------------- 身份令牌 who_token（D1） ----------------
+  * 后端若配了 data/identities.json，AI 端的写入需要凭令牌才能以 op001 / ai1 等身份落。
+  * 不配 → 这套逻辑完全空跑（getWhoToken() 返回 ""，不发头也不拼 URL），不影响 user。
+  * 打开页面时先看 URL 上有没有 ?who_token=xxx：有就存进 localStorage (rm_who_token)，
+  * 不抹掉 URL（这点跟 token 不同——who_token 是给特定端嵌入用的书签路径，
+  * 抹掉反而让人刷新后找不到入口）。不设时不读、不动任何现有行为。 */
+const RM_WHO_TOKEN_KEY = "rm_who_token";
+function pickUpWhoTokenFromUrl(){
+  try {
+    const u = new URL(location.href);
+    const t = (u.searchParams.get("who_token") || "").trim();
+    if (!t) return "";
+    try { localStorage.setItem(RM_WHO_TOKEN_KEY, t); } catch (e) {}
+    return t;
+  } catch (e) { return ""; }
+}
+function getWhoToken(){
+  try { return (localStorage.getItem(RM_WHO_TOKEN_KEY) || "").trim(); }
+  catch (e) { return ""; }
+}
+pickUpWhoTokenFromUrl();
+
 /* ---------------- 身份 who ----------------
  * 默认 "user"；URL 上带 ?who=xxx 时读出并写进 localStorage（不抹掉，
  * 便于复壳直接锁定身份——书签、桌面快捷方式都能照搬）。
@@ -620,8 +642,12 @@ function _notifyOffline(){
 async function fetchAuth(input, init){
   init = init || {};
   const tk = getToken();
+  const wtk = getWhoToken();
   const headers = Object.assign({}, init.headers || {});
   if (tk && !headers["X-Token"] && !headers["x-token"]) headers["X-Token"] = tk;
+  // 身份令牌（D1）：跟 X-Token 是两码事，语义不同所以分两个头。
+  // 不带 wtk → 不发这个头（向后兼容：没配 identities.json 的旧用户不受影响）
+  if (wtk && !headers["X-Who-Token"] && !headers["x-who-token"]) headers["X-Who-Token"] = wtk;
   let r;
   try {
     r = await fetch(input, Object.assign({}, init, { headers: headers }));
@@ -762,10 +788,12 @@ function saveNow(){
 window.addEventListener("beforeunload", () => {
   if (!state.book) return;
   try {
-    // sendBeacon 无法自定义请求头；只能把 token 与身份拼到 URL 上做后备
+    // sendBeacon 无法自定义请求头；只能把 token / 身份令牌 / 身份拼到 URL 上做后备
     const tk = getToken();
+    const wtk = getWhoToken();
     const q = [];
     if (tk) q.push("token=" + encodeURIComponent(tk));
+    if (wtk) q.push("who_token=" + encodeURIComponent(wtk));
     if (state.who) q.push("who=" + encodeURIComponent(state.who));
     const url = q.length ? "/api/progress?" + q.join("&") : "/api/progress";
     // body 里也写一份 who——后端 POST /api/progress 既认 query 也认 body，谁先到都成

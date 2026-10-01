@@ -33,6 +33,9 @@ PROGRESS_FILE = os.path.join(DATA_DIR, "progress.json")
 LIBRARY_FILE = os.path.join(DATA_DIR, "library.json")
 NOTES_FILE = os.path.join(DATA_DIR, "notes.json")
 MD_FILE = os.path.join(DATA_DIR, "阅读进度.md")
+# 身份令牌（D1）：{身份: 钥匙}。文件不存在 → 视为空（只有 user 能写），
+# 绝不能因为缺文件就报错——缺它就是「还没配」，行为退回到 v1.0。
+IDENTITIES_FILE = os.path.join(DATA_DIR, "identities.json")
 
 HOST = os.environ.get("READER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("READER_PORT", "8831"))
@@ -323,6 +326,52 @@ def norm_who(s) -> str:
     return cleaned or "user"
 
 
+# ---------------------------------------------------------------- 身份令牌（D1）
+# 钥匙文件：{身份: 钥匙}。文件不存在 → 空 dict（一切照旧，不报错）。
+# 钥匙是**本机信任环**内的字符串，本机任何进程都能读它——D1 不防这个；
+# 真正的防线是「不绑 0.0.0.0」（见 §5.3）。本机内别让不受信任的进程能读就行。
+def load_identities() -> dict:
+    """读 data/identities.json。文件不存在或损坏 → 空 dict。"""
+    try:
+        if not os.path.exists(IDENTITIES_FILE):
+            return {}
+        # 用 utf-8-sig 容忍 BOM：PowerShell 的 Out-File -Encoding utf8 会写 BOM，
+        # 用户手改也可能在文件头加了 BOM——保持宽容；JSON 体本身不带 BOM 也照样能读
+        with open(IDENTITIES_FILE, "r", encoding="utf-8-sig") as f:
+            d = json.load(f)
+        if not isinstance(d, dict):
+            return {}
+        # 只保留 字符串键:字符串值，其它一律丢（防止 schema 飘）
+        return {str(k): str(v) for k, v in d.items()
+                if isinstance(k, str) and isinstance(v, str) and v}
+    except Exception:
+        return {}
+
+
+def resolve_who(claimed, token: str) -> str:
+    """D1 判定：定身份。
+
+    返回值 = 真正应该使用的身份字符串。空串 "" 表示**拒绝**（调用方回 403）。
+
+    规则（照抄规格第六节）：
+      1. 带令牌且与某个身份的钥匙 hmac.compare_digest 相等 → 返回**那个身份**（忽略 claimed）
+      2. 带令牌但没人匹配 → 返回 ""（拒绝）
+      3. 不带令牌 → 用 norm_who(claimed)；**结果必须是 user 才放行**，
+         自称 op001 / ai1 之类一律返回 ""（拒绝）
+    """
+    token = (token or "").strip()
+    if token:
+        ids = load_identities()
+        for who, key in ids.items():
+            if isinstance(key, str) and hmac.compare_digest(token, key):
+                # 钥匙匹配：服务端说了算，客户端自报的 claimed 一律丢
+                return who
+        return ""
+    # 没带令牌：默认信任本机，只能是 user
+    w = norm_who(claimed)
+    return w if w == "user" else ""
+
+
 def book_progress(d) -> dict:
     """把 books[name] 的「老/新」两种形状都规范成 {身份: 进度}。
 
@@ -599,6 +648,18 @@ class Handler(BaseHTTPRequestHandler):
             pass
         return False
 
+    def _who_token(self) -> str:
+        """取身份令牌（D1）：优先 X-Who-Token 头，其次 ?who_token= 查询参数。
+
+        之所以要支持查询参数：sendBeacon 带不了自定义请求头（fetch 也不行），
+        最后一笔进度只能走 URL（关页前的 sendBeacon）。读端不查这个头。
+        """
+        h = (self.headers.get("X-Who-Token") or "").strip()
+        if h:
+            return h
+        q = (self._query().get("who_token") or [""])[0].strip()
+        return q
+
     # ---- GET ----
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
@@ -825,8 +886,10 @@ class Handler(BaseHTTPRequestHandler):
             pct = min(1.0, max(0.0, float(pct)))
         except Exception:
             pct = None
-        # who：默认 user；只保留 [A-Za-z0-9_-] 且 ≤ 32；清洗后空回落 user
-        who = norm_who(data.get("who"))
+        # who：D1——带令牌以令牌为准；不带令牌只能是 user（自称 AI 一律拒）
+        who = resolve_who(data.get("who"), self._who_token())
+        if not who:
+            return self._err("身份令牌不对，或者自称 AI 却没带令牌", 403)
         with _lock:
             pr = load_progress()
             # tts_offset：给将来 TTS「朗读到哪」留的位置；老条目没这个字段也照常读。
@@ -903,6 +966,10 @@ class Handler(BaseHTTPRequestHandler):
         color = str(data.get("color") or "")[:32]
         chapter = str(data.get("chapter") or "")[:CHAPTER_MAX]
         incoming_id = (data.get("id") or "").strip()
+        # who：D1——划线本身不存 who，但需要确认是哪个身份在写
+        who = resolve_who(data.get("who"), self._who_token())
+        if not who:
+            return self._err("身份令牌不对，或者自称 AI 却没带令牌", 403)
         with _lock:
             nt = load_notes()
             book = nt.setdefault("books", {}).setdefault(name, {"highlights": []})
@@ -945,7 +1012,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "id": target["id"], "created": False})
 
     def _api_notes_comment(self):
-        """POST /api/notes/comment —— 往一条划线追加批注。"""
+        """POST /api/notes/comment —— 往一条划线追加批注。
+
+        D1：身份令牌决定**真身**，thread 项里 who 仍按 user / ai 写，name 用真身。
+        校验矩阵（token 真身 × claimed who）：
+          - 真身=user, claimed=user → 允许；thread 项 {who:user}
+          - 真身=user, claimed=ai   → 403（你持 user 令牌却自称 AI）
+          - 真身=AI身份, claimed=user → 403（持 AI 令牌却以 user 名义写——令牌语义=谁来写就是谁）
+          - 真身=AI身份, claimed=ai  → 允许；thread 项 {who:ai, name:真身}
+          - 不带 token → 真身=user；只允许 claimed=user；否则 403
+        """
         raw = self._body()
         try:
             data = json.loads(raw.decode("utf-8"))
@@ -957,9 +1033,18 @@ class Handler(BaseHTTPRequestHandler):
         hid = (data.get("id") or "").strip()
         if not hid:
             return self._err("划线 id 不能为空")
-        who = data.get("who")
-        if who not in ("user", "ai"):
+        claimed_who = data.get("who")
+        if claimed_who not in ("user", "ai"):
             return self._err("who 只能是 user 或 ai")
+        true_who = resolve_who(claimed_who, self._who_token())
+        if not true_who:
+            return self._err("身份令牌不对，或者自称 AI 却没带令牌", 403)
+        # 持 user 令牌却以 ai 名义写
+        if true_who == "user" and claimed_who == "ai":
+            return self._err("身份令牌不对，或者自称 AI 却没带令牌", 403)
+        # 持 AI 令牌却以 user 名义写
+        if true_who != "user" and claimed_who == "user":
+            return self._err("身份令牌不对，或者自称 AI 却没带令牌", 403)
         text = str(data.get("text") or "")
         if not text:
             return self._err("批注内容不能为空")
@@ -968,9 +1053,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(
                 "批注太长：%d/%d（约合 %d 个汉字，上限 150 个汉字左右）"
                 % (w, COMMENT_WEIGHT_MAX, (w + 1) // 2))
-        name_ai = (data.get("name_ai") or "").strip() if who == "ai" else ""
-        if who == "ai" and name_ai and len(name_ai) > NAME_AI_MAX:
+        # thread 项里 who 字段写 user / ai（数据 schema 限定），name 字段写真身
+        # claimed_name_ai：客户端给的 ai 名；与 token 真身不一致就拒（防止冒名）
+        name_ai = (data.get("name_ai") or "").strip() if claimed_who == "ai" else ""
+        if claimed_who == "ai" and name_ai and len(name_ai) > NAME_AI_MAX:
             name_ai = name_ai[:NAME_AI_MAX]
+        if claimed_who == "ai" and name_ai and name_ai != true_who:
+            # 客户端给的 ai 名跟 token 真身对不上：拒绝
+            return self._err("身份令牌不对，或者自称 AI 却没带令牌", 403)
         with _lock:
             nt = load_notes()
             book = (nt.get("books") or {}).get(name)
@@ -989,9 +1079,10 @@ class Handler(BaseHTTPRequestHandler):
                 thread = []
             if len(thread) >= THREAD_MAX:
                 return self._err("这条划线聊满了（最多 6 轮），换个地方继续吧")
-            item = {"who": who, "text": text[:COMMENT_CHARS_HARD_MAX], "at": now_iso()}
-            if who == "ai" and name_ai:
-                item["name"] = name_ai
+            # thread 项的 who 字段照规范只用 user / ai；具体身份（op001/ai1…）写进 name
+            item = {"who": claimed_who, "text": text[:COMMENT_CHARS_HARD_MAX], "at": now_iso()}
+            if claimed_who == "ai":
+                item["name"] = true_who
             thread.append(item)
             target["thread"] = thread
             save_notes(nt)
@@ -1043,6 +1134,12 @@ class Handler(BaseHTTPRequestHandler):
             index = int(data.get("index"))
         except Exception:
             return self._err("index 必须是整数")
+        # D1：编辑也要通过身份令牌——避免被任何进程冒充他人改话。
+        # 编辑本身不存 who，但需要确认写权限；不带令牌 → 走默认 user 路径
+        # （私有工具本机信任；body 里带个 who 字段方便兼容原接口语义）
+        who = resolve_who(data.get("who"), self._who_token())
+        if not who:
+            return self._err("身份令牌不对，或者自称 AI 却没带令牌", 403)
         text = str(data.get("text") or "")
         if not text:
             return self._err("批注内容不能为空")
@@ -1096,6 +1193,10 @@ class Handler(BaseHTTPRequestHandler):
             index = int(data.get("index"))
         except Exception:
             return self._err("index 必须是整数")
+        # D1：删除也走身份令牌——避免任何进程冒充他人删话。
+        who = resolve_who(data.get("who"), self._who_token())
+        if not who:
+            return self._err("身份令牌不对，或者自称 AI 却没带令牌", 403)
         with _lock:
             nt = load_notes()
             book = (nt.get("books") or {}).get(name)
