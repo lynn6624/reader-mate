@@ -212,13 +212,51 @@ def tts_synthesize(text: str, voice: str, speed: float):
     return out
 
 
+def _common_hanzi_rate(text: str, enc: str, lead_lo: int, lead_hi: int) -> float:
+    """算「常用字命中率」：按 enc 编回去、首字节落在该编码常用区的汉字占比。
+
+    GB2312 一级字（简体常用字）首字节 0xB0–0xD7；Big5 常用字首字节 0xA4–0xC6。
+    同一段字节用错编码解出来，得到的多是生僻字/罕用字，命中率会明显偏低。
+    """
+    hanzi = [c for c in text if "\u4e00" <= c <= "\u9fff"]
+    if not hanzi:
+        return 0.0
+    hit = 0
+    for c in hanzi:
+        try:
+            bs = c.encode(enc)
+        except UnicodeEncodeError:
+            continue
+        if len(bs) == 2 and lead_lo <= bs[0] <= lead_hi:
+            hit += 1
+    return hit / len(hanzi)
+
+
 def decode_bytes(b: bytes) -> str:
-    """txt 编码探测：utf-8 优先，再试 big5 / gb18030（国内老书多为 GBK）。"""
-    for enc in ("utf-8-sig", "utf-8", "big5", "gb18030"):
+    """txt 编码探测：utf-8 优先，其余在 gb18030 / big5 之间按「像不像常用字」择优。
+
+    不能只按「解码报不报错」定序：Big5 的字节表能吞下绝大多数 GBK 字节，
+    把 big5 排在 gb18030 前面，GBK 老书会被静默读成花屏（不报错、不崩）。
+    """
+    for enc in ("utf-8-sig", "utf-8"):
         try:
             return b.decode(enc)
         except UnicodeDecodeError:
             continue
+    cands = []
+    for enc, lo, hi in (("gb18030", 0xB0, 0xD7), ("big5", 0xA4, 0xC6)):
+        try:
+            text = b.decode(enc)
+        except UnicodeDecodeError:
+            continue
+        cands.append((text, _common_hanzi_rate(text, enc, lo, hi)))
+    if cands:
+        # 国内老书以 GBK 为主：平局归 gb18030，big5 要明显更像常用繁体才改判
+        pick = cands[0]
+        for cand in cands[1:]:
+            if cand[1] > pick[1] + 0.15:
+                pick = cand
+        return pick[0]
     return b.decode("utf-8", "replace")
 
 
