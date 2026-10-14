@@ -1,0 +1,16 @@
+[Unit]
+Description=ReaderMate MCP
+After=network-online.target reader-web.service
+Requires=reader-web.service
+[Service]
+Slice=reader-mate.slice
+User=reader
+WorkingDirectory=/opt/reader-mate/core
+EnvironmentFile=/etc/reader-mate.env
+ExecStart=/opt/reader-mate/.venv/bin/python /opt/reader-mate/core/mcp_server.py
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+core/data/
+core/书库/
+state/
+.private/
+.env
+*.env
+!*.env.example
+__pycache__/
+*.pyc
+*.log
+*.sqlite*
+*.bak*

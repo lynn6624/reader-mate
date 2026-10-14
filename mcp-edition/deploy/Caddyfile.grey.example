@@ -1,0 +1,5 @@
+# DNS-only (grey-cloud) public hostname for the ChatGPT connector.
+# Keep access logs disabled: the MCP URL path contains a credential.
+mcp.example.com {
+    reverse_proxy 127.0.0.1:8832
+}

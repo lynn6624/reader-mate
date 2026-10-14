@@ -1,0 +1,22 @@
+[Unit]
+Description=ReaderMate identity token management
+After=network-online.target
+
+[Service]
+Slice=reader-mate.slice
+User=reader
+Group=reader
+WorkingDirectory=/opt/reader-mate/token-mcp
+EnvironmentFile=/etc/reader-mate.env
+Environment=READER_DATA_DIR=/opt/reader-mate/core/data
+Environment=TOKEN_HOST=127.0.0.1
+Environment=TOKEN_PORT=8860
+ExecStart=/usr/bin/python3 /opt/reader-mate/token-mcp/server.py
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+MemoryMax=48M
+
+[Install]
+WantedBy=multi-user.target

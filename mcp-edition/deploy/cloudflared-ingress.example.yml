@@ -1,0 +1,11 @@
+# Insert these ingress rules into your existing tunnel configuration.
+# ReaderMate MCP must precede the reader-web catch-all.
+ingress:
+  - hostname: reader.example.com
+    path: "^/mcp(/|$)"
+    service: http://127.0.0.1:8832
+  - hostname: reader.example.com
+    service: http://127.0.0.1:8831
+  - hostname: token.example.com
+    service: http://127.0.0.1:8860
+  - service: http_status:404

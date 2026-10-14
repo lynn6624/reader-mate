@@ -1,0 +1,6 @@
+[Unit]
+Description=ReaderMate shared memory budget
+[Slice]
+MemoryAccounting=true
+MemoryHigh=192M
+MemoryMax=256M
