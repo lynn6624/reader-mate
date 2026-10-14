@@ -15,6 +15,7 @@
 """
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
@@ -22,6 +23,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import zipfile
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -44,7 +46,10 @@ AUDIT_ROTATE_BYTES = 2 * 1024 * 1024  # 2MB → 改名为 .1（覆盖旧的）
 
 HOST = os.environ.get("READER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("READER_PORT", "8831"))
-MAX_BODY = 64 * 1024 * 1024  # 单本 txt 上限 64MB，够用
+MAX_BODY = 64 * 1024 * 1024  # 单次上传上限 64MB
+MAX_EPUB_UNCOMPRESSED = 128 * 1024 * 1024
+MAX_EPUB_MEMBER = 32 * 1024 * 1024
+MAX_EPUB_FILES = 4096
 
 # 可选 token 鉴权：设了 READER_TOKEN 才启用；启用后所有 /api/* 必须带 token。
 # 接受 ?token=xxx 或请求头 X-Token: xxx。比对用 hmac.compare_digest 防时序攻击。
@@ -237,15 +242,25 @@ def _common_hanzi_rate(text: str, enc: str, lead_lo: int, lead_hi: int) -> float
     return hit / len(hanzi)
 
 
-def decode_bytes(b: bytes) -> str:
-    """txt 编码探测：utf-8 优先，其余在 gb18030 / big5 之间按「像不像常用字」择优。
+def decode_bytes(b: bytes, *, with_encoding=False, strict=False):
+    """TXT 编码探测：先识别 Unicode BOM，再判断 UTF-8 / GB18030 / Big5。
 
     不能只按「解码报不报错」定序：Big5 的字节表能吞下绝大多数 GBK 字节，
     把 big5 排在 gb18030 前面，GBK 老书会被静默读成花屏（不报错、不崩）。
     """
+    for bom, enc in ((b"\xff\xfe\x00\x00", "utf-32"),
+                     (b"\x00\x00\xfe\xff", "utf-32"),
+                     (b"\xff\xfe", "utf-16"), (b"\xfe\xff", "utf-16")):
+        if b.startswith(bom):
+            try:
+                text = b.decode(enc)
+            except UnicodeError as exc:
+                raise ValueError("Unicode 文本编码不完整或已损坏") from exc
+            return (text, enc) if with_encoding else text
     for enc in ("utf-8-sig", "utf-8"):
         try:
-            return b.decode(enc)
+            text = b.decode(enc)
+            return (text, enc) if with_encoding else text
         except UnicodeDecodeError:
             continue
     cands = []
@@ -254,15 +269,18 @@ def decode_bytes(b: bytes) -> str:
             text = b.decode(enc)
         except UnicodeDecodeError:
             continue
-        cands.append((text, _common_hanzi_rate(text, enc, lo, hi)))
+        cands.append((text, _common_hanzi_rate(text, enc, lo, hi), enc))
     if cands:
         # 国内老书以 GBK 为主：平局归 gb18030，big5 要明显更像常用繁体才改判
         pick = cands[0]
         for cand in cands[1:]:
             if cand[1] > pick[1] + 0.15:
                 pick = cand
-        return pick[0]
-    return b.decode("utf-8", "replace")
+        return (pick[0], pick[2]) if with_encoding else pick[0]
+    if strict:
+        raise ValueError("无法识别文本编码；请转换为 UTF-8、UTF-16、GB18030 或 Big5 后重试")
+    text = b.decode("utf-8", "replace")
+    return (text, "utf-8-replace") if with_encoding else text
 
 
 def norm_text(t: str) -> str:
@@ -286,6 +304,52 @@ def safe_name(name: str):
     if name == ".txt":
         return None
     return name
+
+
+def prepare_import(filename: str, raw: bytes):
+    """按内容校验 TXT/EPUB，统一返回 UTF-8 书库名与正文；失败不写入。"""
+    base, ext = os.path.splitext(os.path.basename(filename or ""))
+    if ext.lower() not in (".txt", ".epub"):
+        raise ValueError("只支持 TXT 和 EPUB 文件")
+    name = safe_name(base + ".txt")
+    if not name:
+        raise ValueError("书名不合法")
+    if not raw:
+        raise ValueError("文件是空的")
+    is_zip = raw.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"))
+    if ext.lower() == ".epub" and not is_zip:
+        raise ValueError("文件内容不是 EPUB，请检查格式")
+    if ext.lower() == ".txt" and is_zip:
+        raise ValueError("文件内容是压缩包，请使用 EPUB 扩展名")
+    if is_zip:
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+                items = zf.infolist()
+                if (len(items) > MAX_EPUB_FILES
+                        or any(item.file_size > MAX_EPUB_MEMBER for item in items)
+                        or sum(item.file_size for item in items) > MAX_EPUB_UNCOMPRESSED):
+                    raise ValueError("EPUB 解压后过大，无法安全导入")
+                if "META-INF/container.xml" not in zf.namelist():
+                    raise ValueError("文件内容不是有效的 EPUB")
+            from tools.epub2txt import extract_text
+            _title, lines = extract_text(io.BytesIO(raw))
+            text = norm_text("\n".join(lines))
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError("EPUB 解析失败或文件已损坏") from exc
+        source_format, encoding = "epub", "utf-8"
+    else:
+        text, encoding = decode_bytes(raw, with_encoding=True, strict=True)
+        text = norm_text(text)
+        source_format = "txt"
+    if not text.strip():
+        raise ValueError("没有检测到可导入的正文")
+    if any(ord(ch) < 32 and ch not in "\n\t" for ch in text):
+        raise ValueError("文件包含非文本内容，请检查格式或编码")
+    if len(text) > MAX_BODY or len(text.encode("utf-8")) > MAX_BODY:
+        raise ValueError("转换后的正文超过 64 MB")
+    return name, text, source_format, encoding
 
 
 def book_path(name: str) -> str:
@@ -1064,15 +1128,14 @@ class Handler(BaseHTTPRequestHandler):
     def _api_import(self):
         if CLOUD and resolve_who(None, self._who_token()) != "user":
             return self._err("导入仅限主人", 403)
-        name = safe_name((self._query().get("name") or [""])[0])
-        if not name:
-            return self._err("书名不合法")
-        raw = self._body()
-        if not raw:
-            return self._err("文件是空的")
-        text = norm_text(decode_bytes(raw))
+        filename = (self._query().get("name") or [""])[0]
+        try:
+            name, text, source_format, encoding = prepare_import(filename, self._body())
+        except ValueError as exc:
+            return self._err(str(exc))
         with _lock:
-            existed = os.path.isfile(book_path(name))
+            if os.path.exists(book_path(name)):
+                return self._err("书库已有同名书籍；请改名后再上传，避免覆盖现有阅读记录", 409)
             atomic_write(book_path(name), text)
             lib = load_library()
             lib.get("books", {}).pop(name, None)  # 让下次扫描重算字符数
@@ -1080,7 +1143,8 @@ class Handler(BaseHTTPRequestHandler):
         audit(resolve_who(None, self._who_token()), _audit_token_hint(self._who_token()),
               self._client_ip(), "POST /api/import", name)
         return self._json({"ok": True, "name": name, "chars": len(text),
-                           "overwrote": existed})
+                           "source_format": source_format, "encoding": encoding,
+                           "overwrote": False})
 
     def _api_delete(self):
         if CLOUD and resolve_who(None, self._who_token()) != "user":

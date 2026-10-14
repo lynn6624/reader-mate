@@ -11,4 +11,6 @@
 
 源码中只保留示例域名和测试身份，不含生产书籍、划线、身份凭证、管理员口令、路径钥匙、服务器 IP 或部署配置。部署前替换 `*.example.com`，并在服务器上生成凭证。`004` 只是专用 URL 网关的示例身份名；若使用该网关，需先在令牌管理页创建此身份。
 
-隔离测试：在 Linux 上安装 `core/requirements-mcp.txt` 后运行 `python3 core/selftest-cloud.py`、`python3 token-mcp/selftest.py`，可按需运行原编码与 EPUB 转 TXT 自测。测试只使用临时书库和临时身份文件，不会读取生产数据。
+隔离测试：在 Linux 上安装 `core/requirements-mcp.txt` 后运行 `python3 core/selftest-cloud.py`、`python3 core/selftest-import.py`、`python3 token-mcp/selftest.py`，可按需运行原编码与 EPUB 转 TXT 自测。测试只使用临时书库和临时身份文件，不会读取生产数据。
+
+书库页面支持导入 TXT 和 EPUB。服务端检查文件类型及内容，TXT 自动识别 UTF-8、带 BOM 的 UTF-16/UTF-32、GB18030 和 Big5；EPUB 使用原有转换器提取正文后以 UTF-8 TXT 入库。仅主人身份可以上传。单文件上限 64 MB，重名书籍返回 409，不会覆盖已有阅读进度或批注。

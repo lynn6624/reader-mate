@@ -13,6 +13,11 @@ import os
 import sys
 import unicodedata
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, OSError):
+    pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 SERVER = os.path.join(HERE, "reader_server.py")
 WANTED = ("decode_bytes", "_common_hanzi_rate")
@@ -26,6 +31,8 @@ GBK_SHORT = "读伴本地阅读器进度落文件读得到读伴英文是一个�
 CASES = [
     ("utf-8 中文（无 BOM）", GBK_TEXT.encode("utf-8"), GBK_TEXT),
     ("utf-8 中文（带 BOM）", GBK_TEXT.encode("utf-8-sig"), GBK_TEXT),
+    ("utf-16 中文（带 BOM）", GBK_TEXT.encode("utf-16"), GBK_TEXT),
+    ("utf-32 中文（带 BOM）", GBK_TEXT.encode("utf-32"), GBK_TEXT),
     ("GBK 老书正文", GBK_TEXT.encode("gb18030"), GBK_TEXT),
     ("GBK 短段（真实花屏样本）", GBK_SHORT.encode("gb18030"), GBK_SHORT),
     ("GBK 正文 + 英文数字", ("第 3 章 Chapter Three " + GBK_TEXT).encode("gb18030"),

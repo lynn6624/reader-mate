@@ -444,7 +444,7 @@
 <aside id="libPanel">
   <header>
     <b>书库</b>
-    <label class="btn primary">＋ 导入 txt<input type="file" id="fileInput" multiple accept=".txt,text/plain" hidden></label>
+    <label class="btn primary" title="支持 TXT、EPUB；TXT 自动识别编码">＋ 导入书籍<input type="file" id="fileInput" multiple accept=".txt,.epub,text/plain,application/epub+zip" hidden></label>
     <button class="ibtn" id="btnReload" title="重新扫描书库">↻</button>
     <div id="libTabs">
       <button class="t on" data-tab="lib">书库</button>
@@ -1600,18 +1600,20 @@ function closePanels(){
 
 /* ---------------- 导入 ---------------- */
 async function importFiles(files){
-  const arr = [...files].filter(f => /\.txt$/i.test(f.name) || f.type.startsWith("text/"));
-  if (!arr.length){ toast("只收 txt 文件"); return; }
+  const arr = [...files];
+  if (!arr.length) return;
   let ok = 0;
+  const failed = [];
   for (const f of arr){
-    toast("导入 " + f.name + " …", 6000);
+    toast("识别并导入 " + f.name + " …", 6000);
     try {
       const r = await fetchAuth("/api/import?name=" + encodeURIComponent(f.name), { method: "POST", body: f });
       const j = await r.json();
-      if (j.ok) ok++; else toast((j.error || "导入失败") + "：" + f.name, 3500);
-    } catch (e){ toast("导入失败（后端多半掉了）：" + f.name, 4000); }
+      if (j.ok) ok++; else failed.push(f.name + "：" + (j.error || "导入失败"));
+    } catch (e){ failed.push(f.name + "：连接后端失败"); }
   }
-  toast("导入完成：" + ok + " / " + arr.length + " 本");
+  toast("导入 " + ok + " / " + arr.length + " 本" +
+        (failed.length ? "；失败：" + failed[0] + (failed.length > 1 ? " 等 " + failed.length + " 本" : "") : ""), 7000);
   const books = await loadBooks();
   if (!state.book && books.length) openBook(books[0].name);
 }

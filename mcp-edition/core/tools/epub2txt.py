@@ -318,7 +318,7 @@ def extract_text(epub_path: str) -> tuple[str, list[str]]:
                 out_lines.append("")  # 章节之间留空行
         if skip_files:
             sys.stderr.write(
-                f"[warn] {os.path.basename(epub_path)}: 跳过 {len(skip_files)} 个解析失败的资源: "
+                f"[warn] {os.path.basename(epub_path) if isinstance(epub_path, (str, bytes, os.PathLike)) else '上传文件'}: 跳过 {len(skip_files)} 个解析失败的资源: "
                 + ", ".join(skip_files) + "\n"
             )
     # 收尾：去掉文末多余的空行
