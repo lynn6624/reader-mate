@@ -315,6 +315,13 @@
   }
   #libTabs .t.on{background:var(--bg); color:var(--accent); border:1px solid var(--line)}
   #libTabs .t:hover{color:var(--accent)}
+  #libSearchRow{display:flex; align-items:center; gap:8px; width:100%; padding-top:8px}
+  #libQuery{
+    flex:1; min-width:0; padding:8px 10px; border:1px solid var(--line); border-radius:8px;
+    background:var(--bg); color:var(--fg); font:13px system-ui,"Microsoft YaHei",sans-serif; outline:none;
+  }
+  #libQuery:focus{border-color:var(--accent)}
+  #libCount{flex:none; color:var(--dim); font-size:11.5px; white-space:nowrap}
   .idxList, .excList{padding:2px 0}
   .idxGroup{margin-bottom:14px}
   .idxGroupTitle{
@@ -487,6 +494,10 @@
       <button class="t on" data-tab="lib">书库</button>
       <button class="t" data-tab="idx">索引</button>
       <button class="t" data-tab="exc">摘抄本</button>
+    </div>
+    <div id="libSearchRow">
+      <input id="libQuery" type="search" placeholder="搜索书名或文件名…" autocomplete="off" aria-label="搜索书库">
+      <span id="libCount" aria-live="polite"></span>
     </div>
   </header>
   <div class="body" id="libList"></div>
@@ -1423,6 +1434,31 @@ function pickDefaultBookName(books, whoProgress){
   return books.length ? books[0].name : "";
 }
 
+function applyLibrarySearch(){
+  const query = ($("#libQuery").value || "").trim().normalize("NFKC").toLocaleLowerCase();
+  const cards = [...$("#libList").querySelectorAll(".book")];
+  let shown = 0;
+  for (const card of cards){
+    const match = !query || (card.dataset.search || "").includes(query);
+    card.style.display = match ? "" : "none";
+    if (match) shown++;
+  }
+  const count = $("#libCount");
+  if (count) count.textContent = query ? (shown + " / " + cards.length + " 本") : (cards.length + " 本");
+  let empty = $("#libSearchEmpty");
+  if (query && cards.length && !shown){
+    if (!empty){
+      empty = document.createElement("div");
+      empty.id = "libSearchEmpty";
+      empty.className = "hint";
+      empty.textContent = "没有找到匹配的书。";
+      $("#libList").appendChild(empty);
+    }
+  } else if (empty){
+    empty.remove();
+  }
+}
+
 async function loadBooks(whoProgress){
   whoProgress = whoProgress || {};
   const r = await fetchAuth("/api/books");
@@ -1443,7 +1479,8 @@ async function loadBooks(whoProgress){
   });
   const list = $("#libList");
   if (!books.length){
-    list.innerHTML = '<div class="hint">书库还是空的。<br>点上面的「＋ 导入 txt」，或者直接把 txt 拖进这个窗口。</div>';
+    list.innerHTML = '<div class="hint">书库还是空的。<br>点上面的「＋ 导入书籍」，或者把 TXT / EPUB 文件拖进这个窗口。</div>';
+    applyLibrarySearch();
     renderLibFooter();
     return books;
   }
@@ -1451,6 +1488,7 @@ async function loadBooks(whoProgress){
   for (const b of books){
     const d = document.createElement("div");
     d.className = "book";
+    d.dataset.search = (String(b.title || "") + " " + String(b.name || "")).normalize("NFKC").toLocaleLowerCase();
     const pctv = Math.round((b.percent || 0) * 1000) / 10;
     d.innerHTML =
       '<div class="n">' + esc(b.title) + '</div>' +
@@ -1475,6 +1513,7 @@ async function loadBooks(whoProgress){
     });
     list.appendChild(d);
   }
+  applyLibrarySearch();
   renderLibFooter();   // 顺带刷新底部身份显示
   return books;
 }
@@ -1664,6 +1703,7 @@ $("#btnReload").addEventListener("click", async () => {
   const wp = await fetchWhoProgress();
   loadBooks(wp).then(() => toast("书库已刷新"));
 });
+$("#libQuery").addEventListener("input", applyLibrarySearch);
 $("#btnWhoSwitch").addEventListener("click", switchWhoFromForm);
 $("#whoInput").addEventListener("keydown", e => {
   if (e.key === "Enter"){ e.preventDefault(); switchWhoFromForm(); }
@@ -2338,6 +2378,7 @@ function switchLibTab(tab){
   $("#libTabs").querySelectorAll(".t").forEach(b => {
     b.classList.toggle("on", b.dataset.tab === tab);
   });
+  $("#libSearchRow").style.display = tab === "lib" ? "" : "none";
   $("#libList").style.display = tab === "lib" ? "" : "none";
   $("#idxList").style.display = tab === "idx" ? "" : "none";
   $("#excList").style.display = tab === "exc" ? "" : "none";
