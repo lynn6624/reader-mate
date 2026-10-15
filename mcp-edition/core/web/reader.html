@@ -2142,6 +2142,10 @@ function highlightColor(author){
 function readerLabel(author){
   return author === "user" ? "002" : author === "op001" ? "001" : author === "op004" ? "004" : author;
 }
+function progressReaderLabel(readerId){
+  const alias = readerLabel(readerId);
+  return alias === readerId ? readerId : readerId + "（" + alias + "）";
+}
 function visibleHighlights(){
   return notesCache.list.filter(h => (!h.location_status || h.location_status === "ok") &&
     state.book.text.slice(h.start, h.end) === h.text &&
@@ -2521,7 +2525,7 @@ async function loadSharedProgress(){
       dot.className = "progressDot";
       dot.style.background = highlightColor(id);
       const name = document.createElement("span");
-      name.textContent = readerLabel(id) + (id === state.viewerId ? "（我）" : "");
+      name.textContent = progressReaderLabel(id) + (id === state.viewerId ? "（我）" : "");
       const pct = document.createElement("span");
       pct.className = "progressPct";
       pct.textContent = safePosition ? percent + "%" : "位置待核对";
@@ -2591,7 +2595,7 @@ async function loadLatestOverview(){
       dot.className = "progressDot";
       dot.style.background = highlightColor(id);
       const name = document.createElement("span");
-      name.textContent = readerLabel(id) + (id === data.viewer_id ? "（我）" : "");
+      name.textContent = progressReaderLabel(id) + (id === data.viewer_id ? "（我）" : "");
       const pct = document.createElement("span");
       pct.className = "progressPct";
       const fraction = progress && Number(progress.percent);

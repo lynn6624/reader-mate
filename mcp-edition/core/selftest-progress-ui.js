@@ -30,7 +30,7 @@ async function main() {
   fs.mkdirSync(path.join(temp, 'data'));
   fs.mkdirSync(path.join(temp, '书库'));
   fs.writeFileSync(path.join(temp, 'data', 'identities.json'),
-    JSON.stringify({ user: 'test-user', '004': 'test-004', op001: 'test-op001' }));
+    JSON.stringify({ user: 'test-user', '004': 'test-004', op001: 'test-op001', aru001: 'test-aru001' }));
   fs.writeFileSync(path.join(temp, '书库', bookName), bookText);
   fs.writeFileSync(path.join(temp, '书库', otherName), otherText);
   const port = await freePort();
@@ -77,7 +77,8 @@ async function main() {
   const latest = await request('/api/reading-progress/latest');
   const latestById = Object.fromEntries(latest.readers.map(item => [item.reader_id, item.progress]));
   if (latestById['004']?.book_id !== bookName || latestById.user?.book_id !== otherName ||
-      latestById.op001 !== null) throw new Error('aggregate endpoint chose wrong latest records');
+      latestById.op001 !== null || latestById.aru001 !== null)
+    throw new Error('aggregate endpoint chose wrong latest records');
   if ((await fetch(base + '/api/reading-progress/latest')).status !== 401)
     throw new Error('aggregate endpoint allowed anonymous reading');
 
@@ -94,11 +95,12 @@ async function main() {
       await page.locator('#btnLib').click();
       const beforeOverview = await request('/api/reading-progress?name=other.txt');
       await page.locator('#libTabs [data-tab=overview]').click();
-      await page.waitForFunction(() => document.querySelectorAll('#overviewList .progressItem').length === 3);
+      await page.waitForFunction(() => document.querySelectorAll('#overviewList .progressItem').length === 4);
       const cards = await page.locator('#overviewList .progressItem').allTextContents();
       if (!cards.some(text => text.includes('002') && text.includes('《other》')) ||
           !cards.some(text => text.includes('004') && text.includes('《test》')) ||
-          !cards.some(text => text.includes('001') && text.includes('暂无记录')))
+          !cards.some(text => text.includes('op001（001）') && text.includes('暂无记录')) ||
+          !cards.some(text => text.includes('aru001') && text.includes('暂无记录')))
         throw new Error('overview did not aggregate latest book per reader');
       const afterOverview = await request('/api/reading-progress?name=other.txt');
       if (afterOverview.revision !== beforeOverview.revision)

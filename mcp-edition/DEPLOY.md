@@ -39,6 +39,8 @@ sudo -u reader python3 deploy/init-token-bootstrap.py
 
 新增隔离验收可运行 `python3 core/selftest-cloud.py`，在具备 Playwright 浏览器依赖的环境运行 `python3 core/selftest-browser.py` 与 `node core/selftest-progress-ui.js`。检查手机和桌面的进度显示、临时跳转不写盘、正文变更后拒绝错位续读，以及匿名请求被拒绝。`core/selftest-browser.py` 的 Chrome 路径是 Windows 测试机示例，Linux 上需按环境调整。
 
+进度页若要让身份昵称与令牌管理页对齐，只需替换 `core/web/reader.html`。例如 `op001（001）` 中前者是真实身份 ID，后者是阅读昵称；这项显示修复不改进度或身份数据，也无需重启会按请求读取 HTML 的 Web 进程。替换前备份原页面，失败时仅恢复该页面并重新读取网页即可。
+
 阅读页先通过 `/api/auth-check` 验证现有身份令牌，验证成功后才启动阅读器并读取书架；没有令牌或令牌失效时只显示身份令牌输入门。它复用现有身份令牌，不另设访客口令，也不改变 API、MCP 的鉴权规则。`/api/ping` 仍供健康检查使用，不返回书籍或共读数据。
 
 部署此门禁只需更新 `core/reader_server.py` 与 `core/web/reader.html`，无需数据库迁移。升级前备份这两个文件；若门禁页面或验证接口异常，将备份按原路径恢复并重启 `reader-web.service`。不要恢复或覆盖 `core/data/`、`core/书库/` 或 `state/`。

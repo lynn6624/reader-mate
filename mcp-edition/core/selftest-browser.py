@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory() as directory:
     (base / "data").mkdir()
     (base / "书库").mkdir()
     (base / "data" / "identities.json").write_text(
-        json.dumps({who: "test-" + who for who in ("user", "op001", "op004")}))
+        json.dumps({who: "test-" + who for who in ("user", "op001", "aru001", "op004")}))
     (base / "书库" / "test.txt").write_text(BOOK, encoding="utf-8")
     port = free_port()
     url = f"http://127.0.0.1:{port}"
@@ -137,6 +137,13 @@ with tempfile.TemporaryDirectory() as directory:
                     arg=before['revision'])
                 saved = request("/api/reading-progress?name=test.txt")['progress']
                 assert saved['offset'] == page.evaluate("state.segs[state.currentSeg].start")
+                page.locator("#btnLib").tap()
+                page.locator("#libTabs [data-tab=overview]").tap()
+                page.wait_for_function("document.querySelectorAll('#overviewList .progressItem').length === 4")
+                labels = page.locator("#overviewList .progressHead span:nth-child(2)").all_text_contents()
+                assert any("op001（001）" in label for label in labels), labels
+                assert any(label == "aru001" for label in labels), labels
+                assert not any(label == "001" for label in labels), labels
                 context.close()
                 desktop = browser.new_context(viewport={"width": 1280, "height": 820})
                 desktop_page = desktop.new_page()
@@ -158,7 +165,7 @@ with tempfile.TemporaryDirectory() as directory:
                 desktop.close()
             finally:
                 browser.close()
-        print("PASS: mobile/desktop browser colors, overlap choices, cross-user reply, filter, font refresh, touch selection")
+        print("PASS: mobile/desktop browser colors, overlap choices, cross-user reply, filter, font refresh, touch selection, overview identity labels")
     finally:
         process.terminate()
         process.wait(timeout=10)
