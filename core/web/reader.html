@@ -199,6 +199,11 @@
   .seg mark.flash{
     animation:hlflash 1.2s ease-out;
   }
+  /* 全库搜索跳转：命中的是「段落」而不是划线。原来只有 .seg mark.flash，
+     段落上加 class 匹配不到 —— 补一条对 .seg 生效的，复用同一个 keyframes。 */
+  .seg.flash{
+    animation:hlflash 1.2s ease-out;
+  }
   @keyframes hlflash{
     0%{box-shadow:0 0 0 0 var(--accent)}
     60%{box-shadow:0 0 0 6px rgba(154,107,63,.25)}
@@ -442,6 +447,7 @@
       <button class="t" data-tab="exc">摘抄本</button>
     </div>
   </header>
+  <div style="padding:8px 12px 0"><input id="libQuery" type="search" placeholder="搜索书名或文件名…" autocomplete="off" aria-label="搜索书库" oninput="applyLibFilter()" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;font:inherit"></div>
   <div class="body" id="libList"></div>
   <div class="body" id="idxList" style="display:none"></div>
   <div class="body" id="excList" style="display:none"></div>
@@ -460,6 +466,10 @@
     <input id="q" placeholder="全书搜索…（回车）" autocomplete="off">
     <button class="ibtn" id="btnCloseSearch">×</button>
   </header>
+  <div style="padding:6px 12px 0;display:flex;gap:6px" id="searchScope">
+    <button data-scope="book" style="padding:4px 12px;border:1px solid var(--line);border-radius:999px;background:transparent;color:inherit;font:inherit;cursor:pointer">本书</button>
+    <button data-scope="lib" style="padding:4px 12px;border:1px solid var(--line);border-radius:999px;background:transparent;color:inherit;font:inherit;cursor:pointer">全库</button>
+  </div>
   <div class="body"><div id="hits"></div></div>
 </aside>
 
@@ -1392,6 +1402,8 @@ async function loadBooks(whoProgress){
   for (const b of books){
     const d = document.createElement("div");
     d.className = "book";
+    // 书库搜索：与云端版（reader-mate）逐字一致的规范化，保证两端搜法相同
+    d.dataset.search = (String(b.title || "") + " " + String(b.name || "")).normalize("NFKC").toLocaleLowerCase();
     const pctv = Math.round((b.percent || 0) * 1000) / 10;
     d.innerHTML =
       '<div class="n">' + esc(b.title) + '</div>' +
@@ -1417,7 +1429,22 @@ async function loadBooks(whoProgress){
     list.appendChild(d);
   }
   renderLibFooter();   // 顺带刷新底部身份显示
+  applyLibFilter();    // 重渲染后保持搜索框里的过滤
   return books;
+}
+
+/* 书库搜索：按书名/文件名过滤书库列表。
+ * 规范化方式与云端版（reader-mate）逐字一致 —— 两端搜法相同，用起来不会有差异感。
+ * 输入框用 oninput="applyLibFilter()" 调它；重渲染后也会再调一次，保证过滤不丢。 */
+function applyLibFilter(){
+  const el = document.getElementById("libQuery");
+  const list = document.getElementById("libList");
+  if (!list) return;
+  const q = (((el && el.value) || "") + "").trim().normalize("NFKC").toLocaleLowerCase();
+  list.querySelectorAll(".book").forEach(card => {
+    const hit = !q || (card.dataset.search || "").includes(q);
+    card.style.display = hit ? "" : "none";
+  });
 }
 
 /* 书库底部：显示当前身份 + 切换身份入口。点切换按钮 → 写 localStorage，
@@ -1500,8 +1527,9 @@ function showEmpty(){
 /* ---------------- 搜索 ---------------- */
 function runSearch(q){
   const hits = $("#hits");
-  if (!state.book){ hits.innerHTML = '<div class="hint">先打开一本书再搜。</div>'; return; }
-  if (!q){ hits.innerHTML = '<div class="hint">输入关键词，回车搜全书。</div>'; return; }
+  if (!q){ hits.innerHTML = '<div class="hint">输入关键词，回车搜。</div>'; return; }
+  if (state.searchScope === "lib"){ runSearchLib(q); return; }
+  if (!state.book){ hits.innerHTML = '<div class="hint">先打开一本书再搜（或切到「全库」）。</div>'; return; }
   const text = state.book.text, lq = q.toLowerCase(), low = text.toLowerCase();
   const out = []; let from = 0;
   const MAX = 800;
@@ -1531,8 +1559,58 @@ function runSearch(q){
   hits.appendChild(frag);
 }
 
-function clearMark(){
-  if (state.lastMarked && state.lastMarked.isConnected){
+/* ---------------- 全库搜索（跨书） ---------------- */
+/* 与「本书搜索」的区别：范围是整座书库，结果是「哪本书、第几行」，点击要跨书跳转。
+ * 偏移用后端给的 UTF-16 offset（后端逐行累加算的），直接喂给 segIndexAtOffset。 */
+async function runSearchLib(q){
+  const hits = $("#hits");
+  state.query = q;
+  hits.innerHTML = '<div class="hint">全库搜索中…（' + esc(q) + '）</div>';
+  let j = null;
+  try {
+    const r = await fetchAuth("/api/search?q=" + encodeURIComponent(q) + "&limit=200&per_book=6");
+    j = await r.json();
+  } catch (e) { j = null; }
+  if (!j || !j.ok){ hits.innerHTML = '<div class="hint">全库搜索失败。</div>'; return; }
+  const total = j.hits || 0;
+  if (!total){ hits.innerHTML = '<div class="hint">「' + esc(q) + '」全库没搜到。</div>'; return; }
+  hits.innerHTML = '<div class="hint">共 ' + total + ' 处，分布于 ' + ((j.books || []).length) +
+    ' 本书　（扫了 ' + (j.scanned || 0) + ' 本' + (j.truncated ? '，已截断' : '') + '）</div>';
+  const frag = document.createDocumentFragment();
+  for (const b of (j.books || [])){
+    for (const h of (b.hits || [])){
+      const d = document.createElement("div");
+      d.className = "hit";
+      d.innerHTML = '<div><b>' + esc(String(b.name || "").replace(/\.txt$/i, "")) +
+        '</b> <span class="pre">第 ' + h.line + ' 行</span></div>' +
+        '<span class="post">' + esc(String(h.text || "").slice(0, 120)) + '</span>';
+      d.addEventListener("click", () => jumpToBookHit(b.name, h.offset || 0));
+      frag.appendChild(d);
+    }
+  }
+  hits.appendChild(frag);
+}
+
+/* 跨书跳转：先打开那本书，再跳到偏移处。模式照抄 jumpToHighlight。 */
+function jumpToBookHit(name, offset){
+  if (!state.book || state.book.name !== name){
+    openBook(name).then(() => doJumpToOffset(offset));
+    return;
+  }
+  doJumpToOffset(offset);
+}
+function doJumpToOffset(offset){
+  const segIdx = segIndexAtOffset(offset || 0);
+  ensureRendered(segIdx + 2);
+  const el = state.els[segIdx];
+  if (!el) return;
+  el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
+  view.scrollTop = Math.max(0, el.offsetTop - VTOP - 90);
+  state.currentSeg = segIdx; updateBar();
+  if (window.innerWidth < 900) closePanels();
+}
+
+function clearMark(){  if (state.lastMarked && state.lastMarked.isConnected){
     const i = +state.lastMarked.dataset.i;
     state.lastMarked.textContent = state.segs[i].text;
   }
@@ -1609,6 +1687,17 @@ $("#whoInput").addEventListener("keydown", e => {
   else if (e.key === "Escape"){ e.target.value = state.who || ""; }
 });
 $("#fileInput").addEventListener("change", e => { importFiles(e.target.files); e.target.value = ""; });
+/* 搜索范围切换：本书 / 全库。切完若框里已有词就立刻重搜，少点一次。 */
+$("#searchScope").addEventListener("click", e => {
+  const b = e.target.closest("button[data-scope]");
+  if (!b) return;
+  state.searchScope = b.dataset.scope;
+  Array.prototype.forEach.call($("#searchScope").children, x => {
+    x.style.opacity = (x === b ? "1" : ".45");
+  });
+  const v = ($("#q").value || "").trim();
+  if (v) runSearch(v);
+});
 $("#q").addEventListener("keydown", e => { if (e.key === "Enter") runSearch($("#q").value.trim()); });
 $("#btnFontInc").addEventListener("click", () => { pref.size = Math.min(34, pref.size + 1); localStorage.setItem("r_size", pref.size); applyPref(); });
 $("#btnFontDec").addEventListener("click", () => { pref.size = Math.max(13, pref.size - 1); localStorage.setItem("r_size", pref.size); applyPref(); });
