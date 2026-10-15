@@ -292,6 +292,93 @@ def read_text(path: str) -> str:
         return norm_text(decode_bytes(f.read()))
 
 
+def book_snapshot(path: str):
+    """Read text and its content version from the same bytes."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    return norm_text(decode_bytes(raw)), "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def file_revision(path: str):
+    """Hash a book without keeping its whole text in memory for progress queries."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(65536), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def text_position(text: str, offset: int):
+    """Convert a UTF-16 offset to a zero-based line and UTF-16 column."""
+    if offset < 0:
+        return None
+    units = paragraph_idx = char_offset = 0
+    found = (0, 0, 0) if offset == 0 else None
+    for start in range(0, len(text), 8192):
+        chunk = text[start:start + 8192]
+        chunk_units = len(chunk.encode("utf-16-le")) // 2
+        if found is None and units <= offset <= units + chunk_units:
+            local_units = 0
+            for index, ch in enumerate(chunk):
+                if units + local_units == offset:
+                    found = (paragraph_idx, char_offset, start + index)
+                    break
+                width = 2 if ord(ch) > 0xFFFF else 1
+                local_units += width
+                if ch == "\n":
+                    paragraph_idx += 1
+                    char_offset = 0
+                else:
+                    char_offset += width
+            if found is None and units + chunk_units == offset:
+                found = (paragraph_idx, char_offset, start + len(chunk))
+        elif found is None:
+            newlines = chunk.count("\n")
+            if newlines:
+                paragraph_idx += newlines
+                char_offset = len(chunk.rsplit("\n", 1)[-1].encode("utf-16-le")) // 2
+            else:
+                char_offset += chunk_units
+        units += chunk_units
+    if found is None and units == offset:
+        found = (paragraph_idx, char_offset, len(text))
+    if found is None:
+        return None
+    return found[0], found[1], units, found[2]
+
+
+def progress_view(record: dict, reader_id: str, text: str, book_revision: str) -> dict:
+    """Add version/location status without altering the stored legacy record."""
+    out = dict(record)
+    out["reader_id"] = reader_id
+    try:
+        out["revision"] = max(0, int(record.get("revision") or 0))
+    except (TypeError, ValueError):
+        out["revision"] = 0
+    if text is None:
+        out["location_status"] = ("ok" if record.get("book_revision") == book_revision
+                                  else "content_changed")
+        return out
+    try:
+        offset = int(record.get("offset") or 0)
+    except (TypeError, ValueError):
+        offset = -1
+    position = text_position(text, offset)
+    if position is None:
+        status = "unresolved"
+    elif record.get("book_revision"):
+        status = "ok" if record["book_revision"] == book_revision else "content_changed"
+    else:
+        anchor = re.sub(r"\s+", " ", text[position[3]:position[3] + 40]) if position else ""
+        status = "legacy_anchor_verified" if (record.get("anchor") == anchor or
+                 (not record.get("anchor") and not record.get("offset"))) else "legacy_unverified"
+    if position:
+        out.setdefault("paragraph_idx", position[0])
+        out.setdefault("char_offset", position[1])
+    out["location_status"] = status
+    return out
+
+
 def safe_name(name: str):
     """只允许书库根下的 .txt 文件名，挡掉路径穿越。"""
     name = os.path.basename((name or "").strip())
@@ -650,6 +737,18 @@ def _chapter_at(book_text, start):
     return ""
 
 
+def _chapter_before_index(book_text, index):
+    """Find the last chapter heading without copying the preceding whole book."""
+    cursor = index
+    while cursor > 0:
+        line_start = book_text.rfind("\n", 0, cursor - 1) + 1
+        title = book_text[line_start:cursor].strip()
+        if _CHAPTER_RE.match(title):
+            return title[:40]
+        cursor = line_start
+    return ""
+
+
 def load_notes() -> dict:
     """读 notes.json，缺失/损坏都给空壳。"""
     nt = load_json(NOTES_FILE, {})
@@ -978,6 +1077,10 @@ class Handler(BaseHTTPRequestHandler):
                             out[name] = sub
                     return self._json({"ok": True, "progress": out, "who": who})
                 return self._json({"ok": True, "progress": pr})
+            if path == "/api/reading-progress":
+                return self._api_reading_progress()
+            if path == "/api/reading-progress/latest":
+                return self._api_latest_reading_progress()
             if path == "/api/notes":
                 return self._api_notes()
             if path == "/api/notes/annotations":
@@ -1088,14 +1191,92 @@ class Handler(BaseHTTPRequestHandler):
         p = book_path(name)
         if not os.path.isfile(p):
             return self._err("书库里没有这本书：%s" % name, 404)
-        text = read_text(p)
+        text, book_revision = book_snapshot(p)
         pr = load_progress()
-        by_who = (pr.get("books") or {}).get(name) or {}
+        by_who = {who: progress_view(value, who, text, book_revision)
+                  for who, value in ((pr.get("books") or {}).get(name) or {}).items()
+                  if isinstance(value, dict)}
         # 默认返 user；都没有就给空
         prog = by_who.get("user") if isinstance(by_who.get("user"), dict) else {}
         return self._json({"ok": True, "name": name, "text": text,
+                           "book_revision": book_revision,
                            "chars": len(text), "progress": prog,
                            "by_who": by_who})
+
+    def _api_reading_progress(self):
+        q = self._query()
+        name = safe_name((q.get("name") or [""])[0])
+        if not name:
+            return self._err("书名不合法")
+        p = book_path(name)
+        if not os.path.isfile(p):
+            return self._err("书库里没有这本书", 404)
+        viewer = resolve_who(None, self._who_token())
+        if not viewer:
+            return self._err("身份令牌不对", 403)
+        # This installation has one shared bookshelf. Every authenticated
+        # identity belongs to that space; no cross-space selector exists.
+        by_who = (load_progress().get("books") or {}).get(name) or {}
+        book_revision = file_revision(p)
+        # Modern records already contain stable coordinates and a content hash.
+        # Only legacy entries need a full decode to verify their old anchor.
+        entries_to_check = [v for v in by_who.values() if isinstance(v, dict) and v]
+        need_text = any(not v.get("book_revision") or
+                        "paragraph_idx" not in v or "char_offset" not in v
+                        for v in entries_to_check)
+        text = read_text(p) if need_text else None
+        if (q.get("all") or [""])[0] == "1":
+            entries = [progress_view(v, who, text, book_revision)
+                       for who, v in sorted(by_who.items()) if isinstance(v, dict) and v]
+            return self._json({"ok": True, "name": name, "viewer_id": viewer,
+                               "book_revision": book_revision, "progress": entries})
+        target = (q.get("reader_id") or [""])[0] or viewer
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", target):
+            return self._err("reader_id 不合法")
+        value = by_who.get(target)
+        entry = progress_view(value, target, text, book_revision) if isinstance(value, dict) and value else None
+        return self._json({"ok": True, "name": name, "viewer_id": viewer,
+                           "reader_id": target, "book_revision": book_revision,
+                           "revision": entry["revision"] if entry else 0,
+                           "progress": entry})
+
+    def _api_latest_reading_progress(self):
+        """One last saved position per co-reader across the shared bookshelf."""
+        viewer = resolve_who(None, self._who_token())
+        if not viewer:
+            return self._err("身份令牌不对", 403)
+        readers = set(load_identities())
+        readers.add(viewer)
+        latest = {}
+        for name, by_who in (load_progress().get("books") or {}).items():
+            if not isinstance(name, str) or safe_name(name) != name or not os.path.isfile(book_path(name)):
+                continue
+            if not isinstance(by_who, dict):
+                continue
+            for reader_id, record in by_who.items():
+                if not isinstance(reader_id, str) or not reader_id:
+                    continue
+                readers.add(reader_id)
+                if not isinstance(record, dict) or not record:
+                    continue
+                updated = record.get("updated") if isinstance(record.get("updated"), str) else ""
+                current = latest.get(reader_id)
+                if current and (current["updated"], current["book_id"]) >= (updated, name):
+                    continue
+                latest[reader_id] = {
+                    "book_id": name,
+                    "reader_id": reader_id,
+                    "offset": record.get("offset", 0),
+                    "percent": record.get("percent", 0),
+                    "chapter": record.get("chapter") or "",
+                    "updated": updated,
+                }
+        active = sorted((rid for rid in readers if rid in latest),
+                        key=lambda rid: (latest[rid]["updated"], rid), reverse=True)
+        empty = sorted(rid for rid in readers if rid not in latest)
+        return self._json({"ok": True, "viewer_id": viewer,
+                           "readers": [{"reader_id": rid, "progress": latest.get(rid)}
+                                       for rid in active + empty]})
 
     # ---- POST ----
     def do_DELETE(self):
@@ -1184,26 +1365,39 @@ class Handler(BaseHTTPRequestHandler):
         name = safe_name(data.get("name"))
         if not name:
             return self._err("书名不合法")
+        path = book_path(name)
+        if not os.path.isfile(path):
+            return self._err("书库里没有这本书", 404)
         try:
-            offset = max(0, int(data.get("offset") or 0))
+            offset = int(data.get("offset"))
         except Exception:
-            offset = 0
-        pct = data.get("percent")
+            return self._err("offset 必须是 UTF-16 整数")
         try:
-            pct = min(1.0, max(0.0, float(pct)))
+            expected_revision = int(data["expected_revision"])
         except Exception:
-            pct = None
+            return self._err("请先读取进度并提交 expected_revision", 428)
+        if expected_revision < 0:
+            return self._err("expected_revision 不能为负数")
+        requested_book_revision = data.get("book_revision")
+        if not isinstance(requested_book_revision, str) or not requested_book_revision:
+            return self._err("请先读取正文版本并提交 book_revision", 428)
         # who：D1——带令牌以令牌为准；不带令牌只能是 user（自称 AI 一律拒）
         who = resolve_who(data.get("who"), self._who_token())
         if not who:
             return self._err("身份令牌不对，或者自称 AI 却没带令牌", 403)
         with _lock:
+            if not os.path.isfile(path):
+                return self._err("书库里没有这本书", 404)
+            text, book_revision = book_snapshot(path)
+            if requested_book_revision != book_revision:
+                return self._json({"ok": False, "error": "书籍正文已变化，请重新打开后再设置续读位置",
+                                   "code": "book_changed", "book_revision": book_revision}, 409)
+            position = text_position(text, offset)
+            if position is None:
+                return self._err("offset 超出正文或落在 emoji 中间")
+            paragraph_idx, char_offset, units, text_index = position
             pr = load_progress()
             # tts_offset：给将来 TTS「朗读到哪」留的位置；老条目没这个字段也照常读。
-            try:
-                tts_offset = max(0, int(data.get("tts_offset") or 0))
-            except Exception:
-                tts_offset = 0
             # **绝不覆盖同一本书的其他身份**——这就是要修的那个 bug。
             books = pr.setdefault("books", {})
             by_who = books.setdefault(name, {"user": {}})
@@ -1213,21 +1407,42 @@ class Handler(BaseHTTPRequestHandler):
                     k in by_who for k in ("offset", "percent", "updated")):
                 by_who = book_progress(by_who)
                 books[name] = by_who
+            previous = by_who.get(who) if isinstance(by_who.get(who), dict) else {}
+            try:
+                current_revision = max(0, int(previous.get("revision") or 0))
+            except (TypeError, ValueError):
+                current_revision = 0
+            if expected_revision != current_revision:
+                return self._json({"ok": False, "error": "进度已在别处更新，请刷新后再保存",
+                                   "code": "progress_conflict", "current_revision": current_revision,
+                                   "progress": progress_view(previous, who, text, book_revision) if previous else None}, 409)
+            try:
+                tts_offset = int(data.get("tts_offset", previous.get("tts_offset", 0)))
+            except (TypeError, ValueError):
+                return self._err("tts_offset 不合法")
+            if not 0 <= tts_offset <= units or text_position(text, tts_offset) is None:
+                return self._err("tts_offset 超出正文或落在 emoji 中间")
             by_who[who] = {
                 "offset": offset,
-                "percent": pct if pct is not None else 0,
-                "chars": int(data.get("chars") or 0),
-                "chapter": str(data.get("chapter") or "")[:80],
-                "anchor": str(data.get("anchor") or "")[:80],
+                "percent": offset / units if units else 0,
+                "chars": units,
+                "chapter": _chapter_before_index(text, text_index),
+                "anchor": re.sub(r"\s+", " ", text[text_index:text_index + 40]),
                 "tts_offset": tts_offset,
                 "updated": now_iso(),
+                "book_revision": book_revision,
+                "revision": current_revision + 1,
+                "paragraph_idx": paragraph_idx,
+                "char_offset": char_offset,
             }
             save_progress(pr)
         # 审计：写盘成功才记，**失败（403）不记**——已由上面 return 提前出。
         audit(who=who, token_hint=_audit_token_hint(self._who_token()),
               ip=self._client_ip(), act="POST /api/progress",
               target=name)
-        return self._json({"ok": True, "name": name, "who": who, "offset": offset})
+        return self._json({"ok": True, "name": name, "who": who, "offset": offset,
+                           "revision": current_revision + 1, "book_revision": book_revision,
+                           "paragraph_idx": paragraph_idx, "char_offset": char_offset})
 
     # ---- notes ----
     def _api_notes(self):

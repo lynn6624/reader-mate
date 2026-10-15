@@ -4,6 +4,7 @@ import json
 import os
 import re
 import stat
+import urllib.error
 import urllib.parse
 import urllib.request
 from mcp.server.fastmcp import FastMCP, Context
@@ -74,8 +75,18 @@ async def api(ctx, path, payload=None, method=None):
             payload["who"] = who
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(API + path, data=data, headers=headers, method=method)
-        with urllib.request.urlopen(req, timeout=30) as response:
-            return json.load(response)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = json.load(exc)
+            except (ValueError, OSError):
+                detail = {}
+            raise ValueError("HTTP %s: %s%s" % (
+                exc.code, detail.get("error", exc.reason),
+                " (current_revision=%s)" % detail["current_revision"]
+                if "current_revision" in detail else "")) from exc
     return await asyncio.to_thread(request)
 
 @mcp.tool()
@@ -100,7 +111,20 @@ async def read_book(name: str, ctx: Context, offset: int = 0, length: int = 3000
         end -= 2
         text = raw[offset * 2:end].decode("utf-16-le")
     return {"name": book["name"], "offset": offset, "next_offset": end // 2,
-            "total_units": len(raw) // 2, "text": text, "by_who": book["by_who"]}
+            "total_units": len(raw) // 2, "text": text,
+            "book_revision": book["book_revision"], "by_who": book["by_who"]}
+
+@mcp.tool()
+async def get_reading_progress(name: str, ctx: Context, reader_id: str = "") -> dict:
+    """Get your saved position by default, or another member's position in this shared bookshelf."""
+    return await api(ctx, "/api/reading-progress?" + urllib.parse.urlencode({
+        "name": name, "reader_id": reader_id}))
+
+@mcp.tool()
+async def list_reading_progress(name: str, ctx: Context) -> dict:
+    """List authenticated co-readers' saved positions for one book; no reading time is inferred."""
+    return await api(ctx, "/api/reading-progress?" + urllib.parse.urlencode({
+        "name": name, "all": "1"}))
 
 @mcp.tool()
 async def list_comments(name: str, ctx: Context, chapter_id: str = "",
@@ -158,8 +182,13 @@ async def delete_highlight(name: str, highlight_id: str, ctx: Context) -> dict:
         "name": name, "id": highlight_id}), method="DELETE")
 
 @mcp.tool()
-async def update_progress(name: str, offset: int, ctx: Context) -> dict:
-    """Update only the authenticated reader's progress; keep their listening position."""
+async def update_progress(name: str, offset: int, ctx: Context,
+                          expected_revision: int = -1) -> dict:
+    """Save your UTF-16 position. Pass revision from get_reading_progress to reject stale writes.
+
+    Legacy callers may omit expected_revision; then the tool reads the current
+    revision immediately before writing. Explicit backward moves are allowed.
+    """
     book = await api(ctx, "/api/book?" + urllib.parse.urlencode({"name": name}))
     who, _ = credentials(ctx)
     raw = book["text"].encode("utf-16-le")
@@ -168,10 +197,13 @@ async def update_progress(name: str, offset: int, ctx: Context) -> dict:
         raise ValueError("Offset outside book")
     raw[:offset*2].decode("utf-16-le")  # reject mid-surrogate offsets
     prior = book["by_who"].get(who, {})
+    if expected_revision < 0:
+        expected_revision = int(prior.get("revision") or 0)
     anchor = raw[offset*2:].decode("utf-16-le")[:40]
     return await api(ctx, "/api/progress", {"name": name, "offset": offset,
         "chars": units, "percent": offset / units if units else 0,
-        "anchor": anchor, "tts_offset": prior.get("tts_offset", 0)})
+        "anchor": anchor, "tts_offset": prior.get("tts_offset", 0),
+        "book_revision": book["book_revision"], "expected_revision": expected_revision})
 
 class IdentityGate:
     def __init__(self, app):

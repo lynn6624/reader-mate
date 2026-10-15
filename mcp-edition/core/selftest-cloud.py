@@ -32,6 +32,10 @@ async def run():
         identities = {n: 'test-' + n for n in ('user', 'op001', 'op004', '004')}
         (base / 'data' / 'identities.json').write_text(json.dumps(identities))
         (base / '书库' / 'test.txt').write_text('第一章\n你好😀一起读书。\n第二段。', encoding='utf8')
+        (base / 'data' / 'progress.json').write_text(json.dumps({
+            'version':1, 'books':{'test.txt':{
+                'offset':4, 'anchor':'你好😀一起读书。 第二段。',
+            'updated':'2026-10-14T00:00:00'}}}, ensure_ascii=False), encoding='utf-8')
         hp, mp = port(), port()
         env = dict(os.environ, READER_CLOUD='1', READER_PORT=str(hp), READER_MCP_PORT=str(mp),
                    READER_API_URL='http://127.0.0.1:' + str(hp),
@@ -51,6 +55,10 @@ async def run():
                     await asyncio.sleep(.1)
                 else: raise AssertionError('Servers did not start')
                 assert (await client.get(f'http://127.0.0.1:{hp}/api/books')).status_code == 401
+                legacy = (await client.get(f'http://127.0.0.1:{hp}/api/reading-progress',
+                    params={'name':'test.txt'}, headers={'X-Who-Token':'test-user'})).json()
+                assert legacy['progress']['location_status'] == 'legacy_anchor_verified'
+                assert legacy['progress']['revision'] == 0
                 assert (await client.get(f'http://127.0.0.1:{hp}/api/books', headers={'X-Who-Token':'bad'})).status_code == 401
                 assert (await client.post(f'http://127.0.0.1:{hp}/api/delete?name=test.txt', headers={'X-Who-Token':'test-op001'})).status_code == 403
                 assert (await client.post(f'http://127.0.0.1:{mp}/mcp/{path_key}')).status_code == 401
@@ -66,15 +74,29 @@ async def run():
                     async with streamable_http_client(f'http://127.0.0.1:{mp}/mcp/{path_key}', http_client=hc) as (r,w,_):
                         async with ClientSession(r,w) as session:
                             await session.initialize()
-                            tools = await session.list_tools(); assert len(tools.tools) == 9
+                            tools = await session.list_tools(); assert len(tools.tools) == 11
                             async def call(name, args):
                                 result = await session.call_tool(name, args)
                                 assert not result.isError, result
                                 return result.structuredContent or json.loads(result.content[0].text)
                             book = await call('read_book', {'name':'test.txt', 'offset':0, 'length':7})
                             assert book['text'] == '第一章\n你好' and book['next_offset'] == 6
-                            await call('update_progress', {'name':'test.txt', 'offset': 4 if who == 'op001' else 6})
+                            before = await call('get_reading_progress', {'name':'test.txt'})
+                            revision = before['revision']
+                            saved = await call('update_progress', {'name':'test.txt',
+                                'offset': 4 if who == 'op001' else 6, 'expected_revision': revision})
+                            assert saved['revision'] == revision + 1
+                            own = await call('get_reading_progress', {'name':'test.txt'})
+                            assert own['progress']['revision'] == saved['revision']
+                            assert own['progress']['location_status'] == 'ok'
+                            assert (own['progress']['paragraph_idx'], own['progress']['char_offset']) == (
+                                (1, 0) if who == 'op001' else (1, 2))
+                            shared = await call('list_reading_progress', {'name':'test.txt'})
+                            assert any(p['reader_id'] == who for p in shared['progress'])
                             if not create and who == 'op004':
+                                peer = await call('get_reading_progress', {
+                                    'name':'test.txt', 'reader_id':'op001'})
+                                assert peer['progress']['offset'] == 4
                                 notes = await call('list_comments', {'name':'test.txt'})
                                 chapter = await call('get_highlights', {'name':'test.txt', 'chapter_id':'第一章'})
                                 assert any(h['author_id'] == 'op001' for h in chapter['highlights'])
@@ -95,7 +117,7 @@ async def run():
                         f'http://127.0.0.1:{mp}/mcp/{chatgpt_key}', http_client=hc) as (r,w,_):
                     async with ClientSession(r,w) as session:
                         await session.initialize()
-                        assert len((await session.list_tools()).tools) == 9
+                        assert len((await session.list_tools()).tools) == 11
                         result = await session.call_tool('get_highlights', {
                             'name':'test.txt', 'chapter_id':'第一章'})
                         assert not result.isError, result
@@ -148,7 +170,7 @@ async def run():
                 assert resp.status_code == 409
                 resp = await hc.post(url+'/api/notes/comment', headers=hdr('op004'), json={
                     'name':'test.txt','id':h002,'who':'ai','text':'004在002划线下留言','author_id':'user'})
-                assert resp.status_code == 200 and resp.json()['annotation']['author_id'] == 'op004'
+                assert resp.status_code == 200 and resp.json()['annotation']['author_id'] == 'op004', (resp.status_code, resp.text)
                 anns = (await hc.get(url+'/api/notes/annotations', params={'name':'test.txt','highlight_id':h002}, headers=hdr('op004'))).json()
                 assert anns['annotations'][0]['author_id'] == 'op004'
                 resp = await hc.post(url+'/api/notes/highlight', headers=hdr('user'), json={
@@ -165,6 +187,39 @@ async def run():
                 pr = (await hc.get(url+'/api/progress', headers=hdr('user'))).json()['progress']['books']['test.txt']
                 assert pr['op001']['offset'] == 4 and pr['op004']['offset'] == 6
                 assert pr['004']['offset'] == 4
+                current_book = (await hc.get(url+'/api/book?name=test.txt', headers=hdr('op001'))).json()
+                assert current_book['book_revision'].startswith('sha256:')
+                emoji_end = await hc.post(url+'/api/progress', headers=hdr('user'), json={
+                    'name':'test.txt', 'offset':8, 'expected_revision':0,
+                    'book_revision':current_book['book_revision']})
+                assert emoji_end.status_code == 200 and emoji_end.json()['paragraph_idx'] == 1
+                assert emoji_end.json()['char_offset'] == 4
+                current_revision = pr['op001']['revision']
+                # A forged author cannot redirect a write; explicit backward movement is valid.
+                moved = await hc.post(url+'/api/progress', headers=hdr('op001'), json={
+                    'name':'test.txt', 'who':'op004', 'offset':0,
+                    'expected_revision':current_revision,
+                    'book_revision':current_book['book_revision']})
+                assert moved.status_code == 200 and moved.json()['who'] == 'op001'
+                assert moved.json()['revision'] == current_revision + 1
+                peer = (await hc.get(url+'/api/reading-progress',
+                    params={'name':'test.txt','reader_id':'op004'}, headers=hdr('op001'))).json()
+                assert peer['progress']['offset'] == 6
+                stale = await hc.post(url+'/api/progress', headers=hdr('op001'), json={
+                    'name':'test.txt','offset':6, 'expected_revision':current_revision,
+                    'book_revision':current_book['book_revision']})
+                assert stale.status_code == 409 and stale.json()['code'] == 'progress_conflict'
+                assert stale.json()['current_revision'] == current_revision + 1
+                assert (await hc.post(url+'/api/progress', headers=hdr('op001'), json={
+                    'name':'test.txt','offset':7, 'expected_revision':current_revision + 1,
+                    'book_revision':current_book['book_revision']})).status_code == 400
+                assert (await hc.post(url+'/api/progress', headers=hdr('op001'), json={
+                    'name':'test.txt','offset':4})).status_code == 428
+                assert (await hc.get(url+'/api/reading-progress?name=test.txt',
+                    headers=hdr('bad'))).status_code == 401
+                listed = (await hc.get(url+'/api/reading-progress',
+                    params={'name':'test.txt','all':'1'}, headers=hdr('004'))).json()
+                assert {p['reader_id'] for p in listed['progress']} >= {'op001','op004','004'}
                 assert (await hc.get(url+'/api/audit', headers=hdr('op001'))).status_code == 403
                 assert (await hc.get(url+'/api/audit', headers=hdr('user'))).status_code == 200
                 assert (await hc.get(url+'/api/tts?text=你好', headers=hdr('user'))).status_code == 501
@@ -188,7 +243,16 @@ async def run():
             async with httpx.AsyncClient(trust_env=False) as hc:
                 changed = (await hc.get(f'http://127.0.0.1:{hp}/api/notes', params={'name':'test.txt','chapter_id':'第一章'}, headers={'X-Who-Token':'test-user'})).json()
                 assert changed['highlights'] and all(h['location_status'] == 'content_changed' for h in changed['highlights'])
-            print('PASS: MCP/HTTP co-reading, stable IDs, exact and partial overlap, chapter pagination, cross-user replies, ownership, content-change detection, TTS')
+                progress_changed = (await hc.get(f'http://127.0.0.1:{hp}/api/reading-progress',
+                    params={'name':'test.txt', 'reader_id':'op001'},
+                    headers={'X-Who-Token':'test-004'})).json()
+                assert progress_changed['progress']['location_status'] == 'content_changed'
+                old_write = await hc.post(f'http://127.0.0.1:{hp}/api/progress',
+                    headers={'X-Who-Token':'test-op001'}, json={
+                    'name':'test.txt','offset':0,'expected_revision':current_revision + 1,
+                    'book_revision':current_book['book_revision']})
+                assert old_write.status_code == 409 and old_write.json()['code'] == 'book_changed'
+            print('PASS: MCP/HTTP co-reading, legacy progress, shared queries, CAS, UTF-16 positions, ownership, content-change detection, TTS')
         except BaseException:
             logs.flush(); logs.seek(0); print(logs.read()); raise
         finally:

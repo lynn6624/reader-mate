@@ -31,6 +31,14 @@ sudo -u reader python3 deploy/init-token-bootstrap.py
 
 ## 4. 验收与回滚
 
+### 阅读进度增量
+
+`GET /api/reading-progress?name=<书名>` 查询当前身份的进度；加 `reader_id=<身份 ID>` 可查询共读身份，加 `all=1` 返回该书所有已有记录。`GET /api/reading-progress/latest` 返回各身份跨书最近一次保存的进度；所有接口沿用身份令牌鉴权。MCP 的 `get_reading_progress(name, reader_id?)`、`list_reading_progress(name)` 对应结构化查询。总览不批量返回正文，也不写进度。
+
+新版 HTTP `POST /api/progress` 要求 `book_revision` 与 `expected_revision`，冲突返回 409，缺少版本字段返回 428。进度仍保存在原有 `progress.json`，新增版本与定位字段采取懒迁移：读取旧记录不批量改盘，首次成功保存才补齐。因此无需数据库迁移。不要用旧备份的 `progress.json` 整文件回滚，否则会丢失上线后保存的进度。只回滚代码时应保留当前书籍、进度、划线、批注及身份文件。
+
+新增隔离验收可运行 `python3 core/selftest-cloud.py`，在具备 Playwright 浏览器依赖的环境运行 `python3 core/selftest-browser.py` 与 `node core/selftest-progress-ui.js`。检查手机和桌面的进度显示、临时跳转不写盘、正文变更后拒绝错位续读，以及匿名请求被拒绝。`core/selftest-browser.py` 的 Chrome 路径是 Windows 测试机示例，Linux 上需按环境调整。
+
 阅读页先通过 `/api/auth-check` 验证现有身份令牌，验证成功后才启动阅读器并读取书架；没有令牌或令牌失效时只显示身份令牌输入门。它复用现有身份令牌，不另设访客口令，也不改变 API、MCP 的鉴权规则。`/api/ping` 仍供健康检查使用，不返回书籍或共读数据。
 
 部署此门禁只需更新 `core/reader_server.py` 与 `core/web/reader.html`，无需数据库迁移。升级前备份这两个文件；若门禁页面或验证接口异常，将备份按原路径恢复并重启 `reader-web.service`。不要恢复或覆盖 `core/data/`、`core/书库/` 或 `state/`。

@@ -54,6 +54,11 @@
 
   #pbar{position:fixed; top:52px; left:0; right:0; height:2px; background:transparent; z-index:20}
   #pbar i{display:block; height:100%; width:0; background:var(--accent); transition:width .2s}
+  #btnKeepPosition{position:fixed;right:12px;bottom:12px;z-index:25;
+    border:1px solid var(--accent);border-radius:9px;padding:9px 12px;
+    background:var(--card);color:var(--accent);font:13px system-ui,"Microsoft YaHei",sans-serif;
+    box-shadow:0 3px 12px rgba(70,52,32,.14);cursor:pointer}
+  #btnKeepPosition[hidden]{display:none}
 
   /* ---------- 朗读控制条 ---------- */
   /* 默认折叠在顶栏下面；#ttsBar 出现时把内容往下挤 64px。 */
@@ -308,7 +313,7 @@
   #libPanel header{
     flex-wrap:wrap;
   }
-  #libTabs{display:flex; gap:6px; width:100%; margin-top:8px; padding-top:8px; border-top:1px dashed var(--line)}
+  #libTabs{display:flex; flex-wrap:wrap; gap:6px; width:100%; margin-top:8px; padding-top:8px; border-top:1px dashed var(--line)}
   #libTabs .t{
     border:0; background:transparent; color:var(--dim); cursor:pointer;
     padding:4px 9px; border-radius:6px; font-size:13px; font-family:inherit;
@@ -369,6 +374,15 @@
     margin-bottom:9px; width:100%;
   }
   .excExport:hover{border-color:var(--accent); color:var(--accent)}
+  .progressList{font-family:system-ui,"Microsoft YaHei",sans-serif}
+  .progressList .progressHint{font-size:12px;color:var(--dim);line-height:1.6;margin:4px 2px 12px}
+  .progressList .progressItem{border:1px solid var(--line);border-radius:9px;background:var(--bg);padding:10px 11px;margin-bottom:9px}
+  .progressList .progressHead{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600}
+  .progressList .progressDot{width:10px;height:10px;border-radius:50%;flex:none}
+  .progressList .progressHead .progressPct{margin-left:auto;color:var(--accent);font-variant-numeric:tabular-nums}
+  .progressList .progressMeta{font-size:11.5px;color:var(--dim);line-height:1.6;margin:5px 0 7px;overflow-wrap:anywhere}
+  .progressList .progressTrack{height:3px;border-radius:3px;background:var(--line);overflow:hidden}
+  .progressList .progressJump{margin-top:9px;font-size:12px}
 
 /* 书库抽屉底部：当前身份 + 切换入口。窄屏也跟着抽屉走，不挤顶栏。 */
 #libFooter{
@@ -452,6 +466,7 @@
   </div>
 </div>
 <div id="pbar"><i></i></div>
+<button id="btnKeepPosition" type="button" hidden>将当前位置设为续读点</button>
 
 <!-- 朗读控制条：默认隐藏；按了朗读按钮才出现 -->
 <div id="ttsBar" style="display:none">
@@ -494,6 +509,8 @@
       <button class="t on" data-tab="lib">书库</button>
       <button class="t" data-tab="idx">索引</button>
       <button class="t" data-tab="exc">摘抄本</button>
+      <button class="t" data-tab="progress">共读进度</button>
+      <button class="t" data-tab="overview">总览</button>
     </div>
     <div id="libSearchRow">
       <input id="libQuery" type="search" placeholder="搜索书名或文件名…" autocomplete="off" aria-label="搜索书库">
@@ -503,6 +520,8 @@
   <div class="body" id="libList"></div>
   <div class="body" id="idxList" style="display:none"></div>
   <div class="body" id="excList" style="display:none"></div>
+  <div class="body progressList" id="progressList" style="display:none" aria-live="polite"></div>
+  <div class="body progressList" id="overviewList" style="display:none" aria-live="polite"></div>
   <div class="libFooter" id="libFooter">
     <div class="whoRow">当前身份：<b id="libWho">user</b></div>
     <div class="whoSwitch">
@@ -683,7 +702,9 @@ const state = {
   ttsOffset: 0,        // 朗读位置（字符偏移）。与 state.currentSeg 是两套进度，互不覆盖。
   who: "user",         // 当前身份（默认 user；URL/localStorage 决定）—— 决定进度读写走哪个身份
   viewerId: "user",    // 只信服务端用令牌解析出的身份，用于共读颜色与操作权限
+  temporaryView: false,
 };
+let gateIdentity = "";
 
 /* ---------------- 带鉴权的 fetch 包装 ----------------
  * 所有调 /api/* 的请求都走这里：自动带 X-Token，401 时弹 showErr 提示。
@@ -828,6 +849,7 @@ function visibleSeg(top){
 
 /* ---------------- 进度 ---------------- */
 let saveTimer = null;
+let saveInFlight = false, saveQueued = false, saveQueuedListening = false, saveBlocked = false;
 function payload(){
   const seg = state.segs[state.currentSeg] || { start: 0, chapter: "" };
   const chars = state.book ? state.book.chars : 0;
@@ -841,35 +863,89 @@ function payload(){
     chapter: seg.chapter || "",
     anchor: (state.book.text.slice(seg.start, seg.start + 40) || "").replace(/\s+/g, " "),
     tts_offset: state.ttsOffset || 0,
+    expected_revision: +(state.book.progress && state.book.progress.revision || 0),
+    book_revision: state.book.book_revision,
   };
 }
+function progressDirty(book, data){
+  const saved = book.progress || {};
+  return saved.book_revision !== data.book_revision ||
+    +(saved.offset || 0) !== data.offset ||
+    +(saved.tts_offset || 0) !== data.tts_offset;
+}
 function scheduleSave(){
+  if (state.temporaryView || saveBlocked) return;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveNow, 1200);
 }
-function saveNow(){
-  if (!state.book) return;
-  fetchAuth("/api/progress", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload()),
-  }).catch(() => {});
+async function saveNow(listeningOnly = false){
+  clearTimeout(saveTimer); saveTimer = null;
+  if (!state.book || saveBlocked || (state.temporaryView && !listeningOnly)) return;
+  if (saveInFlight){
+    saveQueued = true;
+    saveQueuedListening = saveQueuedListening || listeningOnly;
+    return;
+  }
+  const book = state.book, data = payload();
+  if (state.temporaryView && listeningOnly){
+    const status = book.progress && book.progress.location_status;
+    if (status && status !== "ok" && status !== "legacy_anchor_verified") return;
+    data.offset = +(book.progress && book.progress.offset || 0);
+  }
+  if (!progressDirty(book, data)) return;
+  saveInFlight = true;
+  try {
+    const r = await fetchAuth("/api/progress", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    const result = await r.json();
+    if (r.status === 409 || r.status === 428){
+      saveBlocked = true;
+      showErr(result.error || "续读位置保存冲突，请刷新后核对位置");
+    } else if (r.ok && result.ok && state.book === book){
+      book.progress = Object.assign({}, book.progress, data, {
+        revision: result.revision, book_revision: result.book_revision,
+      });
+      if (typeof libTab !== "undefined" && libTab === "progress") loadSharedProgress();
+    } else if (!r.ok || !result.ok){
+      showErr(result.error || "阅读进度保存失败");
+    }
+  } catch (e) { /* fetchAuth handles offline state */ }
+  finally {
+    saveInFlight = false;
+    if (saveQueued){
+      const nextListeningOnly = saveQueuedListening;
+      saveQueued = false; saveQueuedListening = false;
+      saveNow(nextListeningOnly);
+    }
+  }
+}
+function setTemporaryView(active){
+  state.temporaryView = !!active;
+  if (active){ clearTimeout(saveTimer); saveTimer = null; }
+  $("#btnKeepPosition").hidden = !active;
 }
 window.addEventListener("beforeunload", () => {
-  if (!state.book) return;
+  if (!state.book || state.temporaryView || saveBlocked || saveInFlight) return;
   try {
-    // sendBeacon 无法自定义请求头；只能把 token / 身份令牌 / 身份拼到 URL 上做后备
+    const data = payload();
+    if (!progressDirty(state.book, data)) return;
     const tk = getToken();
     const wtk = getWhoToken();
-    const q = [];
-    if (tk) q.push("token=" + encodeURIComponent(tk));
-    if (wtk) q.push("who_token=" + encodeURIComponent(wtk));
-    if (state.who) q.push("who=" + encodeURIComponent(state.who));
-    const url = q.length ? "/api/progress?" + q.join("&") : "/api/progress";
-    // body 里也写一份 who——后端 POST /api/progress 既认 query 也认 body，谁先到都成
-    navigator.sendBeacon(url,
-      new Blob([JSON.stringify(payload())], { type: "application/json" }));
+    const headers = { "Content-Type": "application/json" };
+    if (tk) headers["X-Token"] = tk;
+    if (wtk) headers["X-Who-Token"] = wtk;
+    // keepalive 支持关页补写和自定义鉴权头，避免把令牌放进 URL。
+    fetch("/api/progress", { method: "POST", headers, body: JSON.stringify(data),
+                             keepalive: true, credentials: "same-origin" }).catch(() => {});
   } catch (e) {}
+});
+$("#btnKeepPosition").addEventListener("click", () => {
+  if (saveBlocked){ toast("进度已在别处更新，请刷新后再设置续读点"); return; }
+  setTemporaryView(false);
+  saveNow();
+  toast("正在保存新的续读位置");
 });
 
 function updateBar(){
@@ -1170,7 +1246,7 @@ function ttsFlushSaveNow(){
   if (tts.saveTimer){ clearTimeout(tts.saveTimer); tts.saveTimer = null; }
   tts.dirtySegs = 0;
   tts.lastSaveAt = Date.now();
-  saveNow();
+  saveNow(true);
 }
 tts.flushSave = ttsFlushSaveNow;
 tts.markProgress = ttsMarkProgress;
@@ -1531,6 +1607,11 @@ function switchWhoFromForm(){
   if (!inp) return;
   const w = normWhoName(inp.value);
   if (!w){ toast("身份名不合法（数字字母下划线连字符，≤32）"); return; }
+  if (gateIdentity && w !== gateIdentity){
+    inp.value = gateIdentity;
+    toast("云端身份由令牌确定；切换身份请使用对应令牌");
+    return;
+  }
   if (w === state.who){ toast("已经是这个身份了"); return; }
   setWho(w);
   state.who = w;
@@ -1547,22 +1628,29 @@ async function openBook(name){
   const r = await fetchAuth("/api/book?name=" + encodeURIComponent(name));
   const j = await r.json();
   if (!j.ok){ toast(j.error || "打不开"); return; }
-  // 进度按身份选；该身份没有就回退到后端给的 user 兜底，再没有就空。
-  // by_who 是后端规范后的 {身份: 进度}；取不到就原样用 j.progress（向后兼容旧字段）。
+  // 只取当前认证身份的续读位置，不能用其他人的位置冒充自己的进度。
   let prog = {};
   const wm = state.who || "user";
   if (j.by_who && typeof j.by_who === "object" && j.by_who[wm] && typeof j.by_who[wm] === "object"){
     prog = j.by_who[wm];
-  } else if (j.progress && typeof j.progress === "object"){
+  } else if (!j.by_who && wm === "user" && j.progress && typeof j.progress === "object"){
     prog = j.progress;
   }
-  state.book = Object.assign({}, j, { progress: prog });
+  state.book = Object.assign({}, j, { progress: prog, chars: j.text.length });
+  saveBlocked = false;
+  setTemporaryView(false);
   state.segs = splitSegments(j.text);
   state.els = []; state.rendered = 0; state.currentSeg = 0;
   reader.innerHTML = "";
   $("#bkTitle").textContent = j.name.replace(/\.txt$/i, "");
   renderMore(300);
-  const off = (prog && prog.offset) || 0;
+  const positionStatus = prog && prog.location_status;
+  const canResume = !positionStatus || positionStatus === "ok" || positionStatus === "legacy_anchor_verified";
+  const off = canResume ? ((prog && prog.offset) || 0) : 0;
+  if (!canResume){
+    setTemporaryView(true);
+    toast("旧续读位置与当前正文无法核对；请确认位置后点“设为续读点”", 7000);
+  }
   if (off > 0){
     const idx = segIndexAtOffset(off);
     ensureRendered(idx + 2);
@@ -1638,6 +1726,8 @@ function clearMark(){
 }
 
 function jumpTo(offset, q){
+  if (saveTimer){ clearTimeout(saveTimer); saveTimer = null; saveNow(); }
+  setTemporaryView(true);
   const idx = segIndexAtOffset(offset);
   ensureRendered(idx + 2);
   const el = state.els[idx];
@@ -1652,7 +1742,8 @@ function jumpTo(offset, q){
     state.lastMarked = el;
   }
   view.scrollTop = Math.max(0, el.offsetTop - VTOP - 90);
-  state.currentSeg = idx; updateBar(); scheduleSave();
+  state.currentSeg = idx; updateBar();
+  toast("临时查看：续读位置未改变", 2800);
   if (window.innerWidth < 900) closePanels();
 }
 
@@ -2382,8 +2473,147 @@ function switchLibTab(tab){
   $("#libList").style.display = tab === "lib" ? "" : "none";
   $("#idxList").style.display = tab === "idx" ? "" : "none";
   $("#excList").style.display = tab === "exc" ? "" : "none";
+  $("#progressList").style.display = tab === "progress" ? "" : "none";
+  $("#overviewList").style.display = tab === "overview" ? "" : "none";
   if (tab === "idx") renderIndex();
   else if (tab === "exc") renderExcerpt();
+  else if (tab === "progress") loadSharedProgress();
+  else if (tab === "overview") loadLatestOverview();
+}
+let progressRequest = 0;
+async function loadSharedProgress(){
+  const box = $("#progressList"), book = state.book, requestId = ++progressRequest;
+  if (!book){ box.textContent = "先打开一本书，再看共读进度。"; return; }
+  box.textContent = "正在读取共读进度…";
+  try {
+    const r = await fetchAuth("/api/reading-progress?" + new URLSearchParams({name: book.name, all: "1"}));
+    const data = await r.json();
+    if (requestId !== progressRequest || state.book !== book) return;
+    if (!r.ok || !data.ok) throw new Error(data.error || "读取失败");
+    box.replaceChildren();
+    if (data.book_revision !== book.book_revision){
+      box.textContent = "书籍正文已更新，请重新打开这本书后查看进度。";
+      return;
+    }
+    const hint = document.createElement("div");
+    hint.className = "progressHint";
+    hint.textContent = book.name + " · 仅列出已保存进度的共读者；临时查看不会改动你的续读点。";
+    box.appendChild(hint);
+    const entries = Array.isArray(data.progress) ? data.progress : [];
+    if (!entries.length){
+      const empty = document.createElement("div");
+      empty.className = "progressHint";
+      empty.textContent = "这本书还没有人保存续读位置。";
+      box.appendChild(empty);
+      return;
+    }
+    for (const entry of entries){
+      const id = String(entry.reader_id || "");
+      const offset = Number(entry.offset);
+      const validOffset = Number.isInteger(offset) && offset >= 0 && offset <= book.chars;
+      const safePosition = validOffset && ["ok", "legacy_anchor_verified"].includes(entry.location_status);
+      const percent = validOffset && book.chars ? Math.round(offset / book.chars * 100) : 0;
+      const item = document.createElement("div");
+      item.className = "progressItem";
+      const head = document.createElement("div");
+      head.className = "progressHead";
+      const dot = document.createElement("span");
+      dot.className = "progressDot";
+      dot.style.background = highlightColor(id);
+      const name = document.createElement("span");
+      name.textContent = readerLabel(id) + (id === state.viewerId ? "（我）" : "");
+      const pct = document.createElement("span");
+      pct.className = "progressPct";
+      pct.textContent = safePosition ? percent + "%" : "位置待核对";
+      head.append(dot, name, pct);
+      const meta = document.createElement("div");
+      meta.className = "progressMeta";
+      const chapter = String(entry.chapter || "").trim();
+      const paragraph = entry.paragraph_idx != null && Number.isInteger(Number(entry.paragraph_idx)) ?
+        "第 " + (Number(entry.paragraph_idx) + 1) + " 段" : "";
+      const updated = String(entry.updated || "").replace("T", " ").slice(0, 16);
+      meta.textContent = [chapter || paragraph || "正文", updated ? "保存于 " + updated : ""].filter(Boolean).join(" · ");
+      const track = document.createElement("div");
+      track.className = "progressTrack";
+      const fill = document.createElement("i");
+      fill.style.width = (safePosition ? percent : 0) + "%";
+      track.appendChild(fill);
+      item.append(head, meta, track);
+      if (safePosition){
+        const jump = document.createElement("button");
+        jump.className = "btn progressJump";
+        jump.type = "button";
+        jump.textContent = "临时查看位置";
+        jump.addEventListener("click", () => {
+          if (state.book !== book) return;
+          jumpTo(offset, "");
+          closePanels();
+        });
+        item.appendChild(jump);
+      }
+      box.appendChild(item);
+    }
+  } catch (error){
+    if (requestId === progressRequest && state.book === book)
+      box.textContent = "共读进度读取失败，请稍后重试。";
+  }
+}
+let overviewRequest = 0;
+async function loadLatestOverview(){
+  const box = $("#overviewList"), requestId = ++overviewRequest;
+  box.textContent = "正在读取共读总览…";
+  try {
+    const r = await fetchAuth("/api/reading-progress/latest");
+    const data = await r.json();
+    if (requestId !== overviewRequest) return;
+    if (!r.ok || !data.ok) throw new Error(data.error || "读取失败");
+    box.replaceChildren();
+    const hint = document.createElement("div");
+    hint.className = "progressHint";
+    hint.textContent = "每个身份最近一次保存的位置，跨书汇总。这里只显示，不会改变任何续读点。";
+    box.appendChild(hint);
+    const readers = Array.isArray(data.readers) ? data.readers : [];
+    if (!readers.length){
+      const empty = document.createElement("div");
+      empty.className = "progressHint";
+      empty.textContent = "还没有共读者的进度记录。";
+      box.appendChild(empty);
+      return;
+    }
+    for (const item of readers){
+      const id = String(item.reader_id || "");
+      const progress = item.progress;
+      const card = document.createElement("div");
+      card.className = "progressItem";
+      const head = document.createElement("div");
+      head.className = "progressHead";
+      const dot = document.createElement("span");
+      dot.className = "progressDot";
+      dot.style.background = highlightColor(id);
+      const name = document.createElement("span");
+      name.textContent = readerLabel(id) + (id === data.viewer_id ? "（我）" : "");
+      const pct = document.createElement("span");
+      pct.className = "progressPct";
+      const fraction = progress && Number(progress.percent);
+      pct.textContent = progress ? (Number.isFinite(fraction) ?
+        Math.round(Math.max(0, Math.min(1, fraction)) * 100) + "%" : "已保存") : "暂无记录";
+      head.append(dot, name, pct);
+      const meta = document.createElement("div");
+      meta.className = "progressMeta";
+      if (progress){
+        const book = String(progress.book_id || "").replace(/\.txt$/i, "");
+        const chapter = String(progress.chapter || "").trim();
+        const updated = String(progress.updated || "").replace("T", " ").slice(0, 16);
+        meta.textContent = ["《" + book + "》", chapter, updated ? "保存于 " + updated : ""].filter(Boolean).join(" · ");
+      } else {
+        meta.textContent = "这位共读者尚未保存阅读位置。";
+      }
+      card.append(head, meta);
+      box.appendChild(card);
+    }
+  } catch (error){
+    if (requestId === overviewRequest) box.textContent = "共读总览读取失败，请稍后重试。";
+  }
 }
 /* 索引全表缓存：{fetchedAt: 0, books: {name: [highlights]}}
  * 切 tab 在 A2 重新打开不会重发请求，但批注改/删后要 invalidateIndex() 强制刷新。 */
@@ -2553,6 +2783,8 @@ function doJumpToHighlight(h){
   if (state.book.text.slice(h.start, h.end) !== h.text){
     toast("这条划线定位异常，原文可能已变化", 4000); return;
   }
+  if (saveTimer){ clearTimeout(saveTimer); saveTimer = null; saveNow(); }
+  setTemporaryView(true);
   const segIdx = segIndexAtOffset(h.start || 0);
   ensureRendered(segIdx + 2);
   const el = state.els[segIdx];
@@ -2564,6 +2796,7 @@ function doJumpToHighlight(h){
   target.classList.remove("flash"); void target.offsetWidth; target.classList.add("flash");
   view.scrollTop = Math.max(0, el.offsetTop - VTOP - 90);
   state.currentSeg = segIdx; updateBar();
+  toast("临时查看：续读位置未改变", 2800);
   // 自动收起抽屉
   if (window.innerWidth < 900) closePanels();
 }
@@ -2592,7 +2825,8 @@ async function bootReader(){
   applyPref();
   // 身份：URL ?who=xxx 优先；写回 localStorage；旧值不合法回落 user。
   const urlWho = pickUpWhoFromUrl();
-  state.who = urlWho || getWho();
+  state.who = gateIdentity || urlWho || getWho();
+  if (gateIdentity) setWho(gateIdentity);
   await showBuildTag();   // 顺便确定用哪个朗读引擎（拿不到就用系统嗓子）
   // 初始化朗读（不支持环境会在这里走降级分支）
   ttsInit();
@@ -2642,7 +2876,10 @@ async function startReaderGate(){
   if (whoToken) headers["X-Who-Token"] = whoToken;
   if (token) headers["X-Token"] = token;
   let access = await checkReaderAccess(headers);
-  if (access){ gate.hidden = true; await bootReader(); return; }
+  if (access){
+    gateIdentity = access.mode === "identity" ? access.who : "";
+    gate.hidden = true; await bootReader(); return;
+  }
   input.focus();
   $("#gateForm").addEventListener("submit", async e => {
     e.preventDefault();
@@ -2658,6 +2895,7 @@ async function startReaderGate(){
       mode = "token";
     }
     if (access){
+      gateIdentity = access.mode === "identity" ? access.who : "";
       try {
         if (access.mode === "identity" || mode === "identity") localStorage.setItem(RM_WHO_TOKEN_KEY, entered);
         else if (access.mode === "token" || mode === "token") localStorage.setItem(RM_TOKEN_KEY, entered);
