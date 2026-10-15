@@ -387,9 +387,46 @@
 #libFooter .btn{padding:5px 11px; font-size:12.5px}
 #libFooter .tokenLink{display:inline-block; margin-top:8px; color:var(--accent); text-decoration:none}
 #libFooter .tokenLink:hover{text-decoration:underline}
+#accessGate{
+  position:fixed; inset:0; z-index:10000; display:grid; place-items:center;
+  padding:22px; background:var(--bg); color:var(--fg);
+  font-family:system-ui,"Microsoft YaHei",sans-serif;
+}
+#accessGate[hidden]{display:none}
+#accessGate .gateCard{
+  width:min(100%,390px); padding:26px 23px; border:1px solid var(--line);
+  border-radius:16px; background:var(--card); box-shadow:0 12px 40px rgba(70,52,32,.12);
+}
+#accessGate h1{margin:0 0 7px; font-size:21px; font-weight:650; letter-spacing:.04em}
+#accessGate p{margin:0 0 18px; color:var(--dim); font-size:13.5px; line-height:1.7}
+#accessGate input{
+  width:100%; padding:11px 12px; border:1px solid var(--line); border-radius:9px;
+  background:var(--bg); color:var(--fg); font:14px ui-monospace,Consolas,monospace;
+  outline:none;
+}
+#accessGate input:focus{border-color:var(--accent)}
+#accessGate button{
+  width:100%; margin-top:11px; padding:11px; border:0; border-radius:9px;
+  background:var(--accent); color:#fff; font-size:14px; cursor:pointer;
+}
+#accessGate button:disabled{opacity:.65; cursor:wait}
+#accessGate .gateError{min-height:21px; margin-top:9px; color:#b3261e; font-size:12.5px}
 </style>
 </head>
 <body>
+
+<section id="accessGate" role="dialog" aria-modal="true" aria-labelledby="gateTitle">
+  <div class="gateCard">
+    <h1 id="gateTitle">小书桌 · 共读空间</h1>
+    <p>这是共读者的阅读页面。请输入管理员分配给你的身份令牌进入。</p>
+    <form id="gateForm">
+      <input id="gateToken" type="password" inputmode="text" autocomplete="current-password"
+             placeholder="粘贴身份令牌" aria-label="身份令牌" required>
+      <button id="gateSubmit" type="submit">验证并进入</button>
+      <div class="gateError" id="gateError" role="status" aria-live="polite"></div>
+    </form>
+  </div>
+</section>
 
 <div id="bar">
   <button class="ibtn" id="btnLib" title="书库">☰<span class="lbl"> 书库</span></button>
@@ -2510,7 +2547,7 @@ async function showBuildTag(){
   return null;
 }
 
-(async function boot(){
+async function bootReader(){
   applyPref();
   // 身份：URL ?who=xxx 优先；写回 localStorage；旧值不合法回落 user。
   const urlWho = pickUpWhoFromUrl();
@@ -2536,7 +2573,7 @@ async function showBuildTag(){
     showEmpty();
     return;
   }
-})();
+}
 // 共读刷新：编辑/选中文字时不扰动页面；新内容刷新高亮和摘抄索引。
 let coReadBusy = false;
 setInterval(async () => {
@@ -2547,6 +2584,56 @@ setInterval(async () => {
   coReadBusy = true;
   try { await loadHighlights(state.book.name); } finally { coReadBusy = false; }
 }, 5000);
+
+async function checkReaderAccess(headers){
+  try {
+    const response = await fetch("/api/auth-check", { headers: headers || {}, cache: "no-store" });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data && data.authenticated ? data : null;
+  } catch (e){ return null; }
+}
+
+async function startReaderGate(){
+  const gate = $("#accessGate"), input = $("#gateToken"), button = $("#gateSubmit");
+  const headers = {};
+  const whoToken = getWhoToken(), token = getToken();
+  if (whoToken) headers["X-Who-Token"] = whoToken;
+  if (token) headers["X-Token"] = token;
+  let access = await checkReaderAccess(headers);
+  if (access){ gate.hidden = true; await bootReader(); return; }
+  input.focus();
+  $("#gateForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    const entered = input.value.trim();
+    if (!entered){ input.focus(); return; }
+    button.disabled = true;
+    button.textContent = "正在验证…";
+    $("#gateError").textContent = "";
+    access = await checkReaderAccess({"X-Who-Token": entered});
+    let mode = "identity";
+    if (!access){
+      access = await checkReaderAccess({"X-Token": entered});
+      mode = "token";
+    }
+    if (access){
+      try {
+        if (access.mode === "identity" || mode === "identity") localStorage.setItem(RM_WHO_TOKEN_KEY, entered);
+        else if (access.mode === "token" || mode === "token") localStorage.setItem(RM_TOKEN_KEY, entered);
+      } catch (e) {}
+      input.value = "";
+      gate.remove();
+      await bootReader();
+      return;
+    }
+    $("#gateError").textContent = "令牌无效或已失效，请检查后重试。";
+    button.disabled = false;
+    button.textContent = "验证并进入";
+    input.select();
+  });
+}
+
+startReaderGate();
 </script>
 </body>
 </html>

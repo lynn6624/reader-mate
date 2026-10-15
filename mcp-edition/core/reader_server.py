@@ -935,6 +935,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path in ("/", "/index.html", "/reader.html"):
                 return self._page()
+            if path == "/api/auth-check":
+                if not self._token_ok():
+                    return self._err("未授权", 401)
+                who = resolve_who(None, self._who_token()) if CLOUD else "user"
+                return self._json({"ok": True, "authenticated": True,
+                                   "required": bool(CLOUD or TOKEN),
+                                   "mode": "identity" if CLOUD else ("token" if TOKEN else "open"),
+                                   "who": who})
             # 免鉴权的小路径：/api/ping 给保活脚本/健康检查用（只回一句"活着"，不吐任何数据）；
             # favicon 也无所谓。放在鉴权之前，否则保活脚本会拿到 401 误判服务没起。
             if path == "/api/ping":
