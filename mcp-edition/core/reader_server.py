@@ -49,8 +49,9 @@ KINDLE_PAIR_TTL = 600
 KINDLE_SESSION_TTL = 90 * 86400
 KINDLE_COOKIE = "rm_kindle_device"
 _kindle_attempts = {}
-KINDLE_PAGE_CHARS = 400
-KINDLE_PAGE_CHOICES = (360, 400, 440)
+KINDLE_PAGE_CHARS = 440
+KINDLE_PAGE_CHOICES = (440, 340, 280)
+KINDLE_PAGE_FONTS = {440: 18, 340: 20, 280: 22}
 _kindle_index_lock = threading.Lock()
 _kindle_indexes = OrderedDict()
 # 写入审计：data/audit.log（JSONL，每行一条）。**只增不改**——它不防伪，
@@ -1350,7 +1351,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def _kindle_html(self, title, content, code=200):
+    def _kindle_html(self, title, content, code=200, font_size=18):
         body = ("<!doctype html><html lang=zh><head><meta charset=utf-8>"
                 "<meta name=viewport content='width=device-width,initial-scale=1'>"
                 "<title>" + html_escape(title) + " · 小书桌</title>"
@@ -1362,7 +1363,8 @@ class Handler(BaseHTTPRequestHandler):
                 ".nav form{display:inline-block;width:49%;vertical-align:top}"
                 ".nav button{display:block;width:98%;min-height:46px;font:inherit;"
                 "border:2px solid #8b735b;background:#fffaf0;color:#2f2a24}"
-                ".text{white-space:pre-wrap;word-break:break-word;font:1em/1.4 serif}"
+                ".text{white-space:pre-wrap;word-break:break-word;font:" +
+                str(font_size) + "px/1.4 serif}"
                 ".density{font-size:.77em;margin:3px 0 6px}"
                 ".density a{display:inline-block;padding:3px 6px;margin-right:4px;border:1px solid #b8aa95}"
                 ".density .on{background:#e8ddc9;color:#2f2a24;font-weight:bold}"
@@ -1493,8 +1495,8 @@ class Handler(BaseHTTPRequestHandler):
         else:
             nav += self._kindle_turn_form("下一页 →" if end < index["units"] else "读完本书 ✓", name, end, expected, index["revision"], cookie_value, page_chars, paused)
         nav += "</div>"
-        density = "<p class=density>每页文字："
-        for count, label in ((360, "少·360"), (400, "标准·400"), (440, "多·440")):
+        density = "<p class=density>阅读字号："
+        for count, label in ((440, "常规·440"), (340, "大字·340"), (280, "特大·280")):
             selected = " class=on" if count == page_chars else ""
             url = self._kindle_book_url(name, start, index["revision"], count, paused)
             density += "<a" + selected + " href='" + html_escape(url, quote=True) + "'>" + label + "</a>"
@@ -1510,7 +1512,8 @@ class Handler(BaseHTTPRequestHandler):
                    warning + sync_note + nav + density + "<div class=text>" +
                    (html_escape(page_text) if page_text else "本书已读完。") + "</div>" +
                    "<p class=meta><a href='/?full=1&amp;kindle=1'>打开完整阅读页</a></p>")
-        return self._kindle_html(os.path.splitext(name)[0], content)
+        return self._kindle_html(os.path.splitext(name)[0], content,
+                                 font_size=KINDLE_PAGE_FONTS[page_chars])
 
     def _kindle_turn(self):
         cookie_value = self._kindle_cookie_value()

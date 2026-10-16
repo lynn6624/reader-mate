@@ -88,17 +88,21 @@ def main():
                 pct = 100 * saved_offset / (len(text.encode("utf-16-le")) // 2)
                 assert reading.status_code == 200 and f"{pct:.1f}%" in reading.text
                 assert text[505:525] in reading.text and "开头😀" not in reading.text
-                assert "每页文字：" in reading.text and "甲乙丙丁戊己庚辛壬癸" in reading.text
-                assert len(unescape(re.search(r"<div class=text>(.*?)</div>", reading.text, re.S).group(1))) == 400
-                compact = client.get(url + "/kindle?name=book.txt&at=" + str(saved_offset) + "&n=360", headers=device)
-                assert compact.status_code == 200
-                assert len(unescape(re.search(r"<div class=text>(.*?)</div>", compact.text, re.S).group(1))) == 360
-                first_page = client.get(url + "/kindle?name=book.txt&at=0&n=360", headers=device)
+                assert "阅读字号：" in reading.text and "甲乙丙丁戊己庚辛壬癸" in reading.text
+                assert "font:18px/1.4 serif" in reading.text
+                assert len(unescape(re.search(r"<div class=text>(.*?)</div>", reading.text, re.S).group(1))) == 440
+                large = client.get(url + "/kindle?name=book.txt&at=" + str(saved_offset) + "&n=340", headers=device)
+                assert large.status_code == 200 and "font:20px/1.4 serif" in large.text
+                assert len(unescape(re.search(r"<div class=text>(.*?)</div>", large.text, re.S).group(1))) == 340
+                extra = client.get(url + "/kindle?name=book.txt&at=" + str(saved_offset) + "&n=280", headers=device)
+                assert extra.status_code == 200 and "font:22px/1.4 serif" in extra.text
+                assert len(unescape(re.search(r"<div class=text>(.*?)</div>", extra.text, re.S).group(1))) == 280
+                first_page = client.get(url + "/kindle?name=book.txt&at=0&n=340", headers=device)
                 first_text = unescape(re.search(r"<div class=text>(.*?)</div>", first_page.text, re.S).group(1))
                 second_at = len(first_text.encode("utf-16-le")) // 2
-                second_page = client.get(url + f"/kindle?name=book.txt&at={second_at}&n=360", headers=device)
+                second_page = client.get(url + f"/kindle?name=book.txt&at={second_at}&n=340", headers=device)
                 second_text = unescape(re.search(r"<div class=text>(.*?)</div>", second_page.text, re.S).group(1))
-                assert first_text + second_text == text[:720]
+                assert first_text + second_text == text[:680]
                 assert client.get(url + "/api/reading-progress?name=book.txt", headers=owner).json()["progress"]["offset"] == saved_offset
                 forms = re.findall(r"<form method=post action='/kindle/page'>(.*?)</form>",
                                    reading.text, re.S)
@@ -106,16 +110,16 @@ def main():
                 next_fields = {key: unescape(value) for key, value in
                                re.findall(r"name='([^']+)' value='([^']*)'", forms[1])}
                 assert next_fields["target"] != str(saved_offset)
-                assert next_fields["page_chars"] == "400"
+                assert next_fields["page_chars"] == "440"
                 bad_fields = dict(next_fields, csrf="bad")
                 assert client.post(url + "/kindle/page", headers=device, data=bad_fields).status_code == 403
                 assert client.post(url + "/kindle/page", headers=device,
-                                   data=dict(next_fields, page_chars="440")).status_code == 403
+                                   data=dict(next_fields, page_chars="340")).status_code == 403
                 assert client.post(url + "/kindle/page", headers=device,
                                    data=dict(next_fields, paused="1")).status_code == 403
                 turned = client.post(url + "/kindle/page", headers=device, data=next_fields)
                 assert turned.status_code == 303 and turned.headers["Location"].startswith("/kindle?")
-                assert "n=400" in turned.headers["Location"]
+                assert "n=440" in turned.headers["Location"]
                 result = client.get(url + "/api/reading-progress?name=book.txt", headers=owner).json()
                 assert result["progress"]["offset"] == int(next_fields["target"])
                 assert result["progress"]["reader_id"] == "user"
@@ -128,7 +132,7 @@ def main():
                 assert conflict.status_code == 303 and "p=1" in conflict.headers["Location"]
                 paused_page = client.get(url + conflict.headers["Location"], headers=device)
                 assert paused_page.status_code == 200 and "暂未同步" in paused_page.text
-                assert text[905:925] in paused_page.text
+                assert text[945:965] in paused_page.text
                 assert client.get(url + "/api/reading-progress?name=book.txt",
                                   headers=owner).json()["progress"]["offset"] == saved_offset
                 paused_forms = re.findall(r"<form method=post action='/kindle/page'>(.*?)</form>",
