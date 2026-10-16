@@ -49,8 +49,8 @@ KINDLE_PAIR_TTL = 600
 KINDLE_SESSION_TTL = 90 * 86400
 KINDLE_COOKIE = "rm_kindle_device"
 _kindle_attempts = {}
-KINDLE_PAGE_CHARS = 260
-KINDLE_PAGE_CHOICES = (120, 260, 340)
+KINDLE_PAGE_CHARS = 400
+KINDLE_PAGE_CHOICES = (360, 400, 440)
 _kindle_index_lock = threading.Lock()
 _kindle_indexes = OrderedDict()
 # 写入审计：data/audit.log（JSONL，每行一条）。**只增不改**——它不防伪，
@@ -1494,7 +1494,7 @@ class Handler(BaseHTTPRequestHandler):
             nav += self._kindle_turn_form("下一页 →" if end < index["units"] else "读完本书 ✓", name, end, expected, index["revision"], cookie_value, page_chars, paused)
         nav += "</div>"
         density = "<p class=density>每页文字："
-        for count, label in ((120, "少·120"), (260, "标准·260"), (340, "多·340")):
+        for count, label in ((360, "少·360"), (400, "标准·400"), (440, "多·440")):
             selected = " class=on" if count == page_chars else ""
             url = self._kindle_book_url(name, start, index["revision"], count, paused)
             density += "<a" + selected + " href='" + html_escape(url, quote=True) + "'>" + label + "</a>"
