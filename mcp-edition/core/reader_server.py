@@ -49,8 +49,8 @@ KINDLE_PAIR_TTL = 600
 KINDLE_SESSION_TTL = 90 * 86400
 KINDLE_COOKIE = "rm_kindle_device"
 _kindle_attempts = {}
-KINDLE_PAGE_CHARS = 600
-KINDLE_PAGE_CHOICES = (360, 600, 800)
+KINDLE_PAGE_CHARS = 260
+KINDLE_PAGE_CHOICES = (120, 260, 340)
 _kindle_index_lock = threading.Lock()
 _kindle_indexes = OrderedDict()
 # 写入审计：data/audit.log（JSONL，每行一条）。**只增不改**——它不防伪，
@@ -1354,20 +1354,21 @@ class Handler(BaseHTTPRequestHandler):
         body = ("<!doctype html><html lang=zh><head><meta charset=utf-8>"
                 "<meta name=viewport content='width=device-width,initial-scale=1'>"
                 "<title>" + html_escape(title) + " · 小书桌</title>"
-                "<style>body{margin:0 auto;max-width:44em;padding:12px 16px 36px;"
-                "background:#f5efe3;color:#2f2a24;font:19px/1.55 serif}"
-                "h1{font-size:1.25em;margin:0 0 12px}a{color:#704a2d}"
-                ".meta{font-size:.8em;color:#665c50;margin:4px 0 12px}"
-                ".nav{margin:10px 0 16px;white-space:nowrap}"
+                "<style>body{margin:0 auto;max-width:44em;padding:7px 10px 20px;"
+                "background:#f5efe3;color:#2f2a24;font:18px/1.4 serif}"
+                "h1{font-size:1.14em;margin:0 0 4px}a{color:#704a2d}"
+                ".meta{font-size:.78em;color:#665c50;margin:2px 0 5px}"
+                ".nav{margin:5px 0 7px;white-space:nowrap}"
                 ".nav form{display:inline-block;width:49%;vertical-align:top}"
-                ".nav button{display:block;width:98%;min-height:56px;font:inherit;"
+                ".nav button{display:block;width:98%;min-height:46px;font:inherit;"
                 "border:2px solid #8b735b;background:#fffaf0;color:#2f2a24}"
-                ".text{white-space:pre-wrap;word-break:break-word;font:1em/1.48 serif}"
-                ".density{font-size:.8em;margin:8px 0 14px}"
-                ".density a{display:inline-block;padding:5px 9px;margin-right:5px;border:1px solid #b8aa95}"
+                ".text{white-space:pre-wrap;word-break:break-word;font:1em/1.4 serif}"
+                ".density{font-size:.77em;margin:3px 0 6px}"
+                ".density a{display:inline-block;padding:3px 6px;margin-right:4px;border:1px solid #b8aa95}"
                 ".density .on{background:#e8ddc9;color:#2f2a24;font-weight:bold}"
-                ".sync-note{padding:9px 11px;border:1px solid #b8aa95;background:#eee4d2;font-size:.84em}"
-                ".sync-note form{margin:8px 0 0}.sync-note button{padding:8px 12px}"
+                ".sync-note{padding:5px 7px;border:1px solid #b8aa95;background:#eee4d2;font-size:.78em}"
+                ".sync-note form{display:inline;margin:0 0 0 5px}"
+                ".sync-note button{padding:4px 7px}"
                 ".book{display:block;padding:9px 2px;border-bottom:1px solid #cfc3b1}"
                 "input{font:inherit;width:68%;padding:6px}button{font:inherit}"
                 "</style></head><body><h1>" + html_escape(title) + "</h1>" + content +
@@ -1493,15 +1494,14 @@ class Handler(BaseHTTPRequestHandler):
             nav += self._kindle_turn_form("下一页 →" if end < index["units"] else "读完本书 ✓", name, end, expected, index["revision"], cookie_value, page_chars, paused)
         nav += "</div>"
         density = "<p class=density>每页文字："
-        for count, label in ((360, "少"), (600, "标准"), (800, "多")):
+        for count, label in ((120, "少·120"), (260, "标准·260"), (340, "多·340")):
             selected = " class=on" if count == page_chars else ""
             url = self._kindle_book_url(name, start, index["revision"], count, paused)
             density += "<a" + selected + " href='" + html_escape(url, quote=True) + "'>" + label + "</a>"
         density += "</p>"
         sync_note = ""
         if paused:
-            sync_note = ("<div class=sync-note>另一台设备更新了共享进度。本机可以继续翻页，"
-                         "但当前位置暂未同步。等另一台设备停用后，可点下方按钮将此处设为续读点。" +
+            sync_note = ("<div class=sync-note>本机位置暂未同步；停用其他设备后" +
                          self._kindle_turn_form("同步此处进度", name, start, expected,
                                                 index["revision"], cookie_value, page_chars) + "</div>")
         pct = 100 * start / index["units"] if index["units"] else 100
