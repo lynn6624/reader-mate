@@ -43,6 +43,8 @@ Kindle 的 `/k/<一次性码>` 也必须转发到 Web 8831。Web 服务使用 `R
 
 2026-10-16 页面适配补丁：默认每页 600 字，页面上的「少／标准／多」提供 360／600／800 字选择；该 GET 操作不保存进度，翻页表单会签名并保留所选字数。完整阅读页为已配对设备显示固定的「返回 Kindle 阅读」链接，即使 Kindle 不执行 JavaScript 也可返回；原阅读器脚本会清理临时 `kindle=1` 与 `full=1` 参数。部署需同时替换 `core/reader_server.py` 和 `core/web/reader.html`，先备份两者，再原子替换并重启 `reader-web.service`。无需数据迁移，回滚只恢复这两个代码文件，保留 `core/data/`、书库及会话文件。
 
+2026-10-16 进度冲突补丁：当其他设备抢先写入同一身份的进度，Kindle 的翻页请求改为重定向到目标页并标记 `p=1`，不再展示阻断式冲突页。暂停状态下的点按翻页只移动本机阅读位置，不写共享进度；页面持续显示「暂未同步」及手动同步按钮。手动同步使用当前页服务端修订号和签名表单，若另一设备再次抢先保存，仍保持暂停且不覆盖其位置。只需替换 `core/reader_server.py` 并重启 `reader-web.service`；不修改数据库、`core/data/`、书库或设备会话。回滚只恢复备份的后端代码。
+
 ### 阅读进度增量
 
 `GET /api/reading-progress?name=<书名>` 查询当前身份的进度；加 `reader_id=<身份 ID>` 可查询共读身份，加 `all=1` 返回该书所有已有记录。`GET /api/reading-progress/latest` 返回各身份跨书最近一次保存的进度；所有接口沿用身份令牌鉴权。MCP 的 `get_reading_progress(name, reader_id?)`、`list_reading_progress(name)` 对应结构化查询。总览不批量返回正文，也不写进度。

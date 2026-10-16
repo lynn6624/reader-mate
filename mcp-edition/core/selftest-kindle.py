@@ -32,7 +32,7 @@ def main():
         (base / "书库").mkdir()
         (base / "data" / "identities.json").write_text(
             json.dumps({"user": "owner-secret", "004": "other-secret"}), encoding="utf-8")
-        text = "开头😀\n" + "甲乙丙丁戊己庚辛壬癸。\n" * 100
+        text = "开头😀\n" + "甲乙丙丁戊己庚辛壬癸。\n" * 300
         (base / "书库" / "book.txt").write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
         port = free_port()
         url = f"http://127.0.0.1:{port}"
@@ -105,6 +105,8 @@ def main():
                 assert client.post(url + "/kindle/page", headers=device, data=bad_fields).status_code == 403
                 assert client.post(url + "/kindle/page", headers=device,
                                    data=dict(next_fields, page_chars="800")).status_code == 403
+                assert client.post(url + "/kindle/page", headers=device,
+                                   data=dict(next_fields, paused="1")).status_code == 403
                 turned = client.post(url + "/kindle/page", headers=device, data=next_fields)
                 assert turned.status_code == 303 and turned.headers["Location"].startswith("/kindle?")
                 assert "n=600" in turned.headers["Location"]
@@ -116,10 +118,33 @@ def main():
                     "name": "book.txt", "offset": saved_offset,
                     "expected_revision": result["revision"], "book_revision": revision})
                 assert phone.status_code == 200
-                assert client.post(url + "/kindle/page", headers=device,
-                                   data=next_fields).status_code == 409
+                conflict = client.post(url + "/kindle/page", headers=device, data=next_fields)
+                assert conflict.status_code == 303 and "p=1" in conflict.headers["Location"]
+                paused_page = client.get(url + conflict.headers["Location"], headers=device)
+                assert paused_page.status_code == 200 and "当前位置暂未同步" in paused_page.text
+                assert text[1105:1125] in paused_page.text
                 assert client.get(url + "/api/reading-progress?name=book.txt",
                                   headers=owner).json()["progress"]["offset"] == saved_offset
+                paused_forms = re.findall(r"<form method=post action='/kindle/page'>(.*?)</form>",
+                                          paused_page.text, re.S)
+                assert len(paused_forms) == 3
+                paused_next = {key: unescape(value) for key, value in
+                               re.findall(r"name='([^']+)' value='([^']*)'", paused_forms[2])}
+                assert paused_next["paused"] == "1"
+                local_turn = client.post(url + "/kindle/page", headers=device, data=paused_next)
+                assert local_turn.status_code == 303 and "p=1" in local_turn.headers["Location"]
+                assert client.get(url + "/api/reading-progress?name=book.txt",
+                                  headers=owner).json()["progress"]["offset"] == saved_offset
+                local_page = client.get(url + local_turn.headers["Location"], headers=device)
+                resume_form = re.findall(r"<form method=post action='/kindle/page'>(.*?)</form>",
+                                         local_page.text, re.S)[0]
+                resume_fields = {key: unescape(value) for key, value in
+                                 re.findall(r"name='([^']+)' value='([^']*)'", resume_form)}
+                assert resume_fields["paused"] == "0"
+                resumed = client.post(url + "/kindle/page", headers=device, data=resume_fields)
+                assert resumed.status_code == 303 and "p=1" not in resumed.headers["Location"]
+                assert client.get(url + "/api/reading-progress?name=book.txt",
+                                  headers=owner).json()["progress"]["offset"] == int(resume_fields["target"])
                 assert client.get(url + "/api/audit", headers=device).status_code == 403
                 assert client.get(url + "/api/kindle/sessions", headers=device).status_code == 403
                 assert client.post(url + "/api/import?name=no.txt", headers=device).status_code == 403

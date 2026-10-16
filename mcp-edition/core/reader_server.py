@@ -1366,6 +1366,8 @@ class Handler(BaseHTTPRequestHandler):
                 ".density{font-size:.8em;margin:8px 0 14px}"
                 ".density a{display:inline-block;padding:5px 9px;margin-right:5px;border:1px solid #b8aa95}"
                 ".density .on{background:#e8ddc9;color:#2f2a24;font-weight:bold}"
+                ".sync-note{padding:9px 11px;border:1px solid #b8aa95;background:#eee4d2;font-size:.84em}"
+                ".sync-note form{margin:8px 0 0}.sync-note button{padding:8px 12px}"
                 ".book{display:block;padding:9px 2px;border-bottom:1px solid #cfc3b1}"
                 "input{font:inherit;width:68%;padding:6px}button{font:inherit}"
                 "</style></head><body><h1>" + html_escape(title) + "</h1>" + content +
@@ -1380,7 +1382,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _kindle_book_url(self, name, at=None, revision=None, page_chars=None):
+    def _kindle_book_url(self, name, at=None, revision=None, page_chars=None, paused=False):
         query = {"name": name}
         if at is not None:
             query["at"] = str(at)
@@ -1388,18 +1390,21 @@ class Handler(BaseHTTPRequestHandler):
             query["v"] = revision
         if page_chars is not None:
             query["n"] = str(page_chars)
+        if paused:
+            query["p"] = "1"
         return "/kindle?" + urllib.parse.urlencode(query)
 
-    def _kindle_form_mac(self, cookie_value, name, target, expected, revision, page_chars):
+    def _kindle_form_mac(self, cookie_value, name, target, expected, revision, page_chars, paused):
         secret = cookie_value.split(".", 1)[1]
         payload = "\x00".join((name, str(target), str(expected), revision,
-                              str(page_chars))).encode("utf-8")
+                              str(page_chars), "1" if paused else "0")).encode("utf-8")
         return hmac.new(secret.encode("ascii"), payload, hashlib.sha256).hexdigest()
 
-    def _kindle_turn_form(self, label, name, target, expected, revision, cookie_value, page_chars):
-        mac = self._kindle_form_mac(cookie_value, name, target, expected, revision, page_chars)
+    def _kindle_turn_form(self, label, name, target, expected, revision, cookie_value, page_chars, paused=False):
+        mac = self._kindle_form_mac(cookie_value, name, target, expected, revision, page_chars, paused)
         fields = {"name": name, "target": target, "expected_revision": expected,
-                  "book_revision": revision, "page_chars": page_chars, "csrf": mac}
+                  "book_revision": revision, "page_chars": page_chars,
+                  "paused": "1" if paused else "0", "csrf": mac}
         hidden = "".join("<input type=hidden name='" + key + "' value='" +
                          html_escape(str(value), quote=True) + "'>" for key, value in fields.items())
         return ("<form method=post action='/kindle/page'>" + hidden +
@@ -1416,6 +1421,7 @@ class Handler(BaseHTTPRequestHandler):
             page_chars = KINDLE_PAGE_CHARS
         if page_chars not in KINDLE_PAGE_CHOICES:
             page_chars = KINDLE_PAGE_CHARS
+        paused = (q.get("p") or [""])[0] == "1"
         raw_name = (q.get("name") or [""])[0]
         if not raw_name:
             search = (q.get("q") or [""])[0].strip()[:60]
@@ -1480,21 +1486,28 @@ class Handler(BaseHTTPRequestHandler):
             return self._kindle_html("位置无效", "<p>该位置无法对应当前正文。</p><p><a href='" + html_escape(self._kindle_book_url(name), quote=True) + "'>重新打开本书</a></p>", 409)
         expected = max(0, int(record.get("revision") or 0))
         nav = "<div class=nav>"
-        nav += self._kindle_turn_form("← 上一页", name, previous, expected, index["revision"], cookie_value, page_chars) if previous is not None else "<form><button disabled>已到开头</button></form>"
+        nav += self._kindle_turn_form("← 上一页", name, previous, expected, index["revision"], cookie_value, page_chars, paused) if previous is not None else "<form><button disabled>已到开头</button></form>"
         if start >= index["units"]:
             nav += "<form><button disabled>已读完</button></form>"
         else:
-            nav += self._kindle_turn_form("下一页 →" if end < index["units"] else "读完本书 ✓", name, end, expected, index["revision"], cookie_value, page_chars)
+            nav += self._kindle_turn_form("下一页 →" if end < index["units"] else "读完本书 ✓", name, end, expected, index["revision"], cookie_value, page_chars, paused)
         nav += "</div>"
         density = "<p class=density>每页文字："
         for count, label in ((360, "少"), (600, "标准"), (800, "多")):
             selected = " class=on" if count == page_chars else ""
-            url = self._kindle_book_url(name, start, index["revision"], count)
+            url = self._kindle_book_url(name, start, index["revision"], count, paused)
             density += "<a" + selected + " href='" + html_escape(url, quote=True) + "'>" + label + "</a>"
         density += "</p>"
+        sync_note = ""
+        if paused:
+            sync_note = ("<div class=sync-note>另一台设备更新了共享进度。本机可以继续翻页，"
+                         "但当前位置暂未同步。等另一台设备停用后，可点下方按钮将此处设为续读点。" +
+                         self._kindle_turn_form("同步此处进度", name, start, expected,
+                                                index["revision"], cookie_value, page_chars) + "</div>")
         pct = 100 * start / index["units"] if index["units"] else 100
-        content = ("<p class=meta><a href='/kindle'>书库</a> · 002 的位置 %.1f%% · 本页点按翻页</p>" % pct +
-                   warning + nav + density + "<div class=text>" +
+        location_label = "本机位置" if paused else "002 的位置"
+        content = ("<p class=meta><a href='/kindle'>书库</a> · %s %.1f%% · 本页点按翻页</p>" % (location_label, pct) +
+                   warning + sync_note + nav + density + "<div class=text>" +
                    (html_escape(page_text) if page_text else "本书已读完。") + "</div>" +
                    "<p class=meta><a href='/?full=1&amp;kindle=1'>打开完整阅读页</a></p>")
         return self._kindle_html(os.path.splitext(name)[0], content)
@@ -1510,20 +1523,27 @@ class Handler(BaseHTTPRequestHandler):
         get = lambda key: (data.get(key) or [""])[0]
         name, target, expected, revision = (get("name"), get("target"),
                                             get("expected_revision"), get("book_revision"))
+        paused_value = get("paused")
         try:
             page_chars = int(get("page_chars"))
         except ValueError:
             page_chars = 0
         try:
-            valid = page_chars in KINDLE_PAGE_CHOICES and hmac.compare_digest(get("csrf"), self._kindle_form_mac(
-                cookie_value, name, target, expected, revision, page_chars))
+            valid = (page_chars in KINDLE_PAGE_CHOICES and paused_value in ("0", "1") and
+                     hmac.compare_digest(get("csrf"), self._kindle_form_mac(
+                         cookie_value, name, target, expected, revision, page_chars,
+                         paused_value == "1")))
         except (ValueError, IndexError):
             valid = False
         if not valid or safe_name(name) != name or not os.path.isfile(book_path(name)):
             return self._kindle_html("请求无效", "<p>翻页表单已失效，请重新打开书籍。</p>", 403)
+        if paused_value == "1":
+            return self._redirect(self._kindle_book_url(name, target, revision, page_chars, True))
         redirect = self._kindle_book_url(name, target, revision, page_chars)
+        conflict_redirect = self._kindle_book_url(name, target, revision, page_chars, True)
         return self._api_progress({"name": name, "who": "user", "offset": target,
-                                   "expected_revision": expected, "book_revision": revision}, redirect)
+                                   "expected_revision": expected, "book_revision": revision},
+                                  redirect, conflict_redirect)
 
     # ---- GET ----
     def do_GET(self):
@@ -1885,7 +1905,7 @@ class Handler(BaseHTTPRequestHandler):
               self._client_ip(), "POST /api/delete", name)
         return self._json({"ok": True, "name": name})
 
-    def _api_progress(self, data=None, redirect=None):
+    def _api_progress(self, data=None, redirect=None, conflict_redirect=None):
         if data is None:
             raw = self._body()
             try:
@@ -1943,6 +1963,8 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 current_revision = 0
             if expected_revision != current_revision:
+                if conflict_redirect:
+                    return self._redirect(conflict_redirect)
                 if redirect:
                     return self._kindle_html("进度已更新", "<p>手机或另一台设备刚保存了新的位置，当前翻页没有覆盖它。</p><p><a href='" + html_escape(self._kindle_book_url(name), quote=True) + "'>从最新位置继续</a></p>", 409)
                 return self._json({"ok": False, "error": "进度已在别处更新，请刷新后再保存",
