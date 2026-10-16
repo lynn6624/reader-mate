@@ -79,22 +79,35 @@ def main():
                 assert identity.status_code == 200 and identity.json()["who"] == "user"
                 assert client.get(url + "/api/books", headers=device).status_code == 200
                 assert client.get(url + "/", headers=device).headers["Location"] == "/kindle"
+                full_page = client.get(url + "/?full=1&kindle=1", headers=device)
+                assert full_page.status_code == 200 and 'href="/kindle"' in full_page.text
+                assert 'href="/kindle"' not in client.get(url + "/?full=1", headers=owner).text
                 shelf = client.get(url + "/kindle", headers=device)
                 assert shelf.status_code == 200 and "book" in shelf.text
                 reading = client.get(url + "/kindle?name=book.txt", headers=device)
                 pct = 100 * saved_offset / (len(text.encode("utf-16-le")) // 2)
                 assert reading.status_code == 200 and f"{pct:.1f}%" in reading.text
                 assert text[505:525] in reading.text and "开头😀" not in reading.text
+                assert "每页文字：" in reading.text and "甲乙丙丁戊己庚辛壬癸" in reading.text
+                assert len(unescape(re.search(r"<div class=text>(.*?)</div>", reading.text, re.S).group(1))) == 600
+                compact = client.get(url + "/kindle?name=book.txt&at=" + str(saved_offset) + "&n=360", headers=device)
+                assert compact.status_code == 200
+                assert len(unescape(re.search(r"<div class=text>(.*?)</div>", compact.text, re.S).group(1))) == 360
+                assert client.get(url + "/api/reading-progress?name=book.txt", headers=owner).json()["progress"]["offset"] == saved_offset
                 forms = re.findall(r"<form method=post action='/kindle/page'>(.*?)</form>",
                                    reading.text, re.S)
                 assert len(forms) == 2
                 next_fields = {key: unescape(value) for key, value in
                                re.findall(r"name='([^']+)' value='([^']*)'", forms[1])}
                 assert next_fields["target"] != str(saved_offset)
+                assert next_fields["page_chars"] == "600"
                 bad_fields = dict(next_fields, csrf="bad")
                 assert client.post(url + "/kindle/page", headers=device, data=bad_fields).status_code == 403
+                assert client.post(url + "/kindle/page", headers=device,
+                                   data=dict(next_fields, page_chars="800")).status_code == 403
                 turned = client.post(url + "/kindle/page", headers=device, data=next_fields)
                 assert turned.status_code == 303 and turned.headers["Location"].startswith("/kindle?")
+                assert "n=600" in turned.headers["Location"]
                 result = client.get(url + "/api/reading-progress?name=book.txt", headers=owner).json()
                 assert result["progress"]["offset"] == int(next_fields["target"])
                 assert result["progress"]["reader_id"] == "user"

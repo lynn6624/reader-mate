@@ -607,6 +607,7 @@ try {
     localStorage.removeItem("rm_token");
     localStorage.removeItem("rm_who");
     kindleUrl.searchParams.delete("kindle");
+    kindleUrl.searchParams.delete("full");
     history.replaceState(null, "", kindleUrl.pathname + kindleUrl.search + kindleUrl.hash);
   }
 } catch (e) {}

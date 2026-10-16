@@ -49,7 +49,8 @@ KINDLE_PAIR_TTL = 600
 KINDLE_SESSION_TTL = 90 * 86400
 KINDLE_COOKIE = "rm_kindle_device"
 _kindle_attempts = {}
-KINDLE_PAGE_CHARS = 220
+KINDLE_PAGE_CHARS = 600
+KINDLE_PAGE_CHOICES = (360, 600, 800)
 _kindle_index_lock = threading.Lock()
 _kindle_indexes = OrderedDict()
 # 写入审计：data/audit.log（JSONL，每行一条）。**只增不改**——它不防伪，
@@ -195,7 +196,7 @@ def _kindle_index(path):
         return result
 
 
-def _kindle_page_text(path, index, start):
+def _kindle_page_text(path, index, start, page_chars=KINDLE_PAGE_CHARS):
     if start < 0 or start > index["units"]:
         raise ValueError("阅读位置超出正文")
     point = bisect_right(index["offsets"], start) - 1
@@ -210,7 +211,7 @@ def _kindle_page_text(path, index, start):
         if units != start:
             raise ValueError("阅读位置落在 emoji 中间")
         chars = []
-        while len(chars) < KINDLE_PAGE_CHARS:
+        while len(chars) < page_chars:
             ch = stream.read(1)
             if not ch:
                 break
@@ -219,14 +220,14 @@ def _kindle_page_text(path, index, start):
     return "".join(chars), units
 
 
-def _kindle_previous(path, index, start):
+def _kindle_previous(path, index, start, page_chars=KINDLE_PAGE_CHARS):
     if start <= 0:
         return None
     point = bisect_right(index["offsets"], start) - 1
     if point > 0:
         point -= 1
     units = index["offsets"][point]
-    recent = deque(maxlen=KINDLE_PAGE_CHARS)
+    recent = deque(maxlen=page_chars)
     with open(path, "r", encoding="utf-8-sig", newline=None) as stream:
         stream.seek(index["cookies"][point])
         while units < start:
@@ -1361,7 +1362,10 @@ class Handler(BaseHTTPRequestHandler):
                 ".nav form{display:inline-block;width:49%;vertical-align:top}"
                 ".nav button{display:block;width:98%;min-height:56px;font:inherit;"
                 "border:2px solid #8b735b;background:#fffaf0;color:#2f2a24}"
-                ".text{white-space:pre-wrap;word-break:break-word;font:1em/1.55 serif}"
+                ".text{white-space:pre-wrap;word-break:break-word;font:1em/1.48 serif}"
+                ".density{font-size:.8em;margin:8px 0 14px}"
+                ".density a{display:inline-block;padding:5px 9px;margin-right:5px;border:1px solid #b8aa95}"
+                ".density .on{background:#e8ddc9;color:#2f2a24;font-weight:bold}"
                 ".book{display:block;padding:9px 2px;border-bottom:1px solid #cfc3b1}"
                 "input{font:inherit;width:68%;padding:6px}button{font:inherit}"
                 "</style></head><body><h1>" + html_escape(title) + "</h1>" + content +
@@ -1376,23 +1380,26 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _kindle_book_url(self, name, at=None, revision=None):
+    def _kindle_book_url(self, name, at=None, revision=None, page_chars=None):
         query = {"name": name}
         if at is not None:
             query["at"] = str(at)
         if revision:
             query["v"] = revision
+        if page_chars is not None:
+            query["n"] = str(page_chars)
         return "/kindle?" + urllib.parse.urlencode(query)
 
-    def _kindle_form_mac(self, cookie_value, name, target, expected, revision):
+    def _kindle_form_mac(self, cookie_value, name, target, expected, revision, page_chars):
         secret = cookie_value.split(".", 1)[1]
-        payload = "\x00".join((name, str(target), str(expected), revision)).encode("utf-8")
+        payload = "\x00".join((name, str(target), str(expected), revision,
+                              str(page_chars))).encode("utf-8")
         return hmac.new(secret.encode("ascii"), payload, hashlib.sha256).hexdigest()
 
-    def _kindle_turn_form(self, label, name, target, expected, revision, cookie_value):
-        mac = self._kindle_form_mac(cookie_value, name, target, expected, revision)
+    def _kindle_turn_form(self, label, name, target, expected, revision, cookie_value, page_chars):
+        mac = self._kindle_form_mac(cookie_value, name, target, expected, revision, page_chars)
         fields = {"name": name, "target": target, "expected_revision": expected,
-                  "book_revision": revision, "csrf": mac}
+                  "book_revision": revision, "page_chars": page_chars, "csrf": mac}
         hidden = "".join("<input type=hidden name='" + key + "' value='" +
                          html_escape(str(value), quote=True) + "'>" for key, value in fields.items())
         return ("<form method=post action='/kindle/page'>" + hidden +
@@ -1403,6 +1410,12 @@ class Handler(BaseHTTPRequestHandler):
         if not _kindle_session(cookie_value):
             return self._kindle_html("需要重新配对", "<p>这台设备尚未配对或会话已撤销。</p>", 401)
         q = self._query()
+        try:
+            page_chars = int((q.get("n") or [str(KINDLE_PAGE_CHARS)])[0])
+        except ValueError:
+            page_chars = KINDLE_PAGE_CHARS
+        if page_chars not in KINDLE_PAGE_CHOICES:
+            page_chars = KINDLE_PAGE_CHARS
         raw_name = (q.get("name") or [""])[0]
         if not raw_name:
             search = (q.get("q") or [""])[0].strip()[:60]
@@ -1461,21 +1474,27 @@ class Handler(BaseHTTPRequestHandler):
             if record:
                 warning = "<p class=meta>旧进度与当前正文无法可靠对应，已停在开头，未改动原进度。</p>"
         try:
-            page_text, end = _kindle_page_text(path, index, start)
-            previous = _kindle_previous(path, index, start)
+            page_text, end = _kindle_page_text(path, index, start, page_chars)
+            previous = _kindle_previous(path, index, start, page_chars)
         except ValueError:
             return self._kindle_html("位置无效", "<p>该位置无法对应当前正文。</p><p><a href='" + html_escape(self._kindle_book_url(name), quote=True) + "'>重新打开本书</a></p>", 409)
         expected = max(0, int(record.get("revision") or 0))
         nav = "<div class=nav>"
-        nav += self._kindle_turn_form("← 上一页", name, previous, expected, index["revision"], cookie_value) if previous is not None else "<form><button disabled>已到开头</button></form>"
+        nav += self._kindle_turn_form("← 上一页", name, previous, expected, index["revision"], cookie_value, page_chars) if previous is not None else "<form><button disabled>已到开头</button></form>"
         if start >= index["units"]:
             nav += "<form><button disabled>已读完</button></form>"
         else:
-            nav += self._kindle_turn_form("下一页 →" if end < index["units"] else "读完本书 ✓", name, end, expected, index["revision"], cookie_value)
+            nav += self._kindle_turn_form("下一页 →" if end < index["units"] else "读完本书 ✓", name, end, expected, index["revision"], cookie_value, page_chars)
         nav += "</div>"
+        density = "<p class=density>每页文字："
+        for count, label in ((360, "少"), (600, "标准"), (800, "多")):
+            selected = " class=on" if count == page_chars else ""
+            url = self._kindle_book_url(name, start, index["revision"], count)
+            density += "<a" + selected + " href='" + html_escape(url, quote=True) + "'>" + label + "</a>"
+        density += "</p>"
         pct = 100 * start / index["units"] if index["units"] else 100
         content = ("<p class=meta><a href='/kindle'>书库</a> · 002 的位置 %.1f%% · 本页点按翻页</p>" % pct +
-                   warning + nav + "<div class=text>" +
+                   warning + nav + density + "<div class=text>" +
                    (html_escape(page_text) if page_text else "本书已读完。") + "</div>" +
                    "<p class=meta><a href='/?full=1&amp;kindle=1'>打开完整阅读页</a></p>")
         return self._kindle_html(os.path.splitext(name)[0], content)
@@ -1492,13 +1511,17 @@ class Handler(BaseHTTPRequestHandler):
         name, target, expected, revision = (get("name"), get("target"),
                                             get("expected_revision"), get("book_revision"))
         try:
-            valid = hmac.compare_digest(get("csrf"), self._kindle_form_mac(
-                cookie_value, name, target, expected, revision))
+            page_chars = int(get("page_chars"))
+        except ValueError:
+            page_chars = 0
+        try:
+            valid = page_chars in KINDLE_PAGE_CHOICES and hmac.compare_digest(get("csrf"), self._kindle_form_mac(
+                cookie_value, name, target, expected, revision, page_chars))
         except (ValueError, IndexError):
             valid = False
         if not valid or safe_name(name) != name or not os.path.isfile(book_path(name)):
             return self._kindle_html("请求无效", "<p>翻页表单已失效，请重新打开书籍。</p>", 403)
-        redirect = self._kindle_book_url(name, target, revision)
+        redirect = self._kindle_book_url(name, target, revision, page_chars)
         return self._api_progress({"name": name, "who": "user", "offset": target,
                                    "expected_revision": expected, "book_revision": revision}, redirect)
 
@@ -1638,6 +1661,12 @@ class Handler(BaseHTTPRequestHandler):
                 body = f.read()
         except FileNotFoundError:
             return self._err("找不到页面文件 web/reader.html", 500)
+        if self._kindle_cookie_only():
+            return_link = (b'<a href="/kindle" style="position:fixed;left:8px;bottom:8px;'
+                           b'z-index:10001;padding:10px 14px;background:#f5efe3;'
+                           b'border:2px solid #8b735b;color:#2f2a24;font:18px serif">'
+                           b'\xe8\xbf\x94\xe5\x9b\x9e Kindle \xe9\x98\x85\xe8\xaf\xbb</a>')
+            body = body.replace(b'<div id="bar">', return_link + b'<div id="bar">', 1)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
