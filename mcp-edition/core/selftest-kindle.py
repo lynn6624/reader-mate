@@ -2,12 +2,14 @@
 import json
 import os
 import pathlib
+import re
 import shutil
 import socket
 import subprocess
 import sys
 import tempfile
 import time
+from html import unescape
 from urllib.parse import urlparse
 
 import httpx
@@ -30,7 +32,8 @@ def main():
         (base / "书库").mkdir()
         (base / "data" / "identities.json").write_text(
             json.dumps({"user": "owner-secret", "004": "other-secret"}), encoding="utf-8")
-        (base / "书库" / "book.txt").write_text("你好，Kindle。", encoding="utf-8")
+        text = "开头😀\n" + "甲乙丙丁戊己庚辛壬癸。\n" * 100
+        (base / "书库" / "book.txt").write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
         port = free_port()
         url = f"http://127.0.0.1:{port}"
         env = dict(os.environ, READER_CLOUD="1", READER_HOST="127.0.0.1",
@@ -52,6 +55,12 @@ def main():
                 assert client.post(url + "/api/kindle/pairings",
                                    headers={"X-Who-Token": "other-secret"}).status_code == 403
                 owner = {"X-Who-Token": "owner-secret"}
+                revision = client.get(url + "/api/book?name=book.txt", headers=owner).json()["book_revision"]
+                saved_offset = len(text[:505].encode("utf-16-le")) // 2
+                saved = client.post(url + "/api/progress", headers=owner, json={
+                    "name": "book.txt", "offset": saved_offset, "expected_revision": 0,
+                    "book_revision": revision})
+                assert saved.status_code == 200, saved.text
                 pairing = client.post(url + "/api/kindle/pairings", headers=owner)
                 assert pairing.status_code == 201, pairing.text
                 link = pairing.json()["url"]
@@ -69,6 +78,35 @@ def main():
                 identity = client.get(url + "/api/auth-check", headers=device)
                 assert identity.status_code == 200 and identity.json()["who"] == "user"
                 assert client.get(url + "/api/books", headers=device).status_code == 200
+                assert client.get(url + "/", headers=device).headers["Location"] == "/kindle"
+                shelf = client.get(url + "/kindle", headers=device)
+                assert shelf.status_code == 200 and "book" in shelf.text
+                reading = client.get(url + "/kindle?name=book.txt", headers=device)
+                pct = 100 * saved_offset / (len(text.encode("utf-16-le")) // 2)
+                assert reading.status_code == 200 and f"{pct:.1f}%" in reading.text
+                assert text[505:525] in reading.text and "开头😀" not in reading.text
+                forms = re.findall(r"<form method=post action='/kindle/page'>(.*?)</form>",
+                                   reading.text, re.S)
+                assert len(forms) == 2
+                next_fields = {key: unescape(value) for key, value in
+                               re.findall(r"name='([^']+)' value='([^']*)'", forms[1])}
+                assert next_fields["target"] != str(saved_offset)
+                bad_fields = dict(next_fields, csrf="bad")
+                assert client.post(url + "/kindle/page", headers=device, data=bad_fields).status_code == 403
+                turned = client.post(url + "/kindle/page", headers=device, data=next_fields)
+                assert turned.status_code == 303 and turned.headers["Location"].startswith("/kindle?")
+                result = client.get(url + "/api/reading-progress?name=book.txt", headers=owner).json()
+                assert result["progress"]["offset"] == int(next_fields["target"])
+                assert result["progress"]["reader_id"] == "user"
+                # The current page's form must not overwrite a newer phone save.
+                phone = client.post(url + "/api/progress", headers=owner, json={
+                    "name": "book.txt", "offset": saved_offset,
+                    "expected_revision": result["revision"], "book_revision": revision})
+                assert phone.status_code == 200
+                assert client.post(url + "/kindle/page", headers=device,
+                                   data=next_fields).status_code == 409
+                assert client.get(url + "/api/reading-progress?name=book.txt",
+                                  headers=owner).json()["progress"]["offset"] == saved_offset
                 assert client.get(url + "/api/audit", headers=device).status_code == 403
                 assert client.get(url + "/api/kindle/sessions", headers=device).status_code == 403
                 assert client.post(url + "/api/import?name=no.txt", headers=device).status_code == 403
@@ -96,7 +134,7 @@ def main():
                 assert client.delete(url + "/api/kindle/sessions/" + session_id,
                                      headers=owner).status_code == 200
                 assert client.get(url + "/api/auth-check", headers=device).status_code == 401
-                print("Kindle pairing: one-use, owner scope, cookie, CSRF, restart, revoke, secret storage OK")
+                print("Kindle pairing + touch pages: resume, turn/save, conflict, CSRF, restart, revoke OK")
         finally:
             process.terminate()
             try:
