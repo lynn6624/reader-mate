@@ -408,13 +408,7 @@
 #libFooter .btn{padding:5px 11px; font-size:12.5px}
 #libFooter .tokenLink{display:inline-block; margin-top:8px; color:var(--accent); text-decoration:none}
 #libFooter .tokenLink:hover{text-decoration:underline}
-#kindlePairing{margin-top:10px;border-top:1px solid var(--line);padding-top:10px}
-#kindlePairing[hidden]{display:none}
-#kindlePairing .whoHint{margin:4px 0}
-#kindlePairUrl{display:block;overflow-wrap:anywhere;color:var(--accent);margin:6px 0}
-#kindlePairUrl[hidden]{display:none}
-#kindleSessions{margin-top:6px}
-#kindleSessions .device{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:4px}
+/* KINDLE_EXTENSION_CSS */
 #accessGate{
   position:fixed; inset:0; z-index:10000; display:grid; place-items:center;
   padding:22px; background:var(--bg); color:var(--fg);
@@ -537,14 +531,7 @@
     </div>
     <div class="whoHint">仅数字字母下划线连字符，≤32。同一台机器多身份会互相独立落进度。</div>
     <a class="tokenLink" href="https://token.example.com/" target="_blank" rel="noopener">管理共读身份令牌 ↗</a>
-    <div id="kindlePairing" hidden>
-      <b>Kindle 阅读设备</b>
-      <div class="whoHint">在 Kindle 上打开一次性链接，确认后会以 002 身份阅读；不会把主人令牌交给设备。</div>
-      <button class="btn" id="kindleCreate">生成配对链接</button>
-      <a id="kindlePairUrl" target="_blank" rel="noreferrer noopener" hidden></a>
-      <div class="whoHint" id="kindlePairNote"></div>
-      <div id="kindleSessions"></div>
-    </div>
+    <!-- KINDLE_EXTENSION_PANEL -->
   </div>
 </aside>
 
@@ -599,18 +586,8 @@ const $ = s => document.querySelector(s);
  * 不设 token 时整套逻辑就是 no-op，不改任何现有行为。
  */
 const RM_TOKEN_KEY = "rm_token";
-// 配对成功的 Kindle 可能留有旧身份；这一跳只使用服务端设备 cookie。
-try {
-  const kindleUrl = new URL(location.href);
-  if (kindleUrl.searchParams.get("kindle") === "1") {
-    localStorage.removeItem("rm_who_token");
-    localStorage.removeItem("rm_token");
-    localStorage.removeItem("rm_who");
-    kindleUrl.searchParams.delete("kindle");
-    kindleUrl.searchParams.delete("full");
-    history.replaceState(null, "", kindleUrl.pathname + kindleUrl.search + kindleUrl.hash);
-  }
-} catch (e) {}
+let kindleInstalled = false;
+/* KINDLE_EXTENSION_INIT */
 function pickUpTokenFromUrl(){
   try {
     const u = new URL(location.href);
@@ -1629,43 +1606,9 @@ function renderLibFooter(){
   const inp = $("#whoInput");
   if (inp && inp.value !== state.who) inp.value = state.who || "";
   const pairing = $("#kindlePairing");
-  if (pairing) pairing.hidden = !(gateIdentity === "user" && getWhoToken());
+  if (pairing) pairing.hidden = !(kindleInstalled && gateIdentity === "user" && getWhoToken());
 }
-async function refreshKindleSessions(){
-  const box = $("#kindleSessions");
-  if (!box || $("#kindlePairing").hidden) return;
-  const response = await fetchAuth("/api/kindle/sessions");
-  const data = await response.json();
-  box.replaceChildren();
-  if (!response.ok) { box.textContent = data.error || "设备列表暂不可用"; return; }
-  if (!data.sessions.length) { box.textContent = "尚无已配对设备"; return; }
-  data.sessions.forEach((device, index) => {
-    const row = document.createElement("div"); row.className = "device";
-    const label = document.createElement("span");
-    label.textContent = "设备 " + (index + 1) + " · " + new Date(device.created * 1000).toLocaleDateString();
-    const revoke = document.createElement("button");
-    revoke.className = "btn"; revoke.textContent = "撤销";
-    revoke.addEventListener("click", async () => {
-      if (!confirm("撤销这台 Kindle 的登录？")) return;
-      const result = await fetchAuth("/api/kindle/sessions/" + encodeURIComponent(device.session_id), {method:"DELETE"});
-      if (!result.ok) { toast("撤销失败"); return; }
-      refreshKindleSessions();
-    });
-    row.append(label, revoke); box.append(row);
-  });
-}
-$("#kindleCreate").addEventListener("click", async () => {
-  const button = $("#kindleCreate"), link = $("#kindlePairUrl"), note = $("#kindlePairNote");
-  button.disabled = true;
-  try {
-    const response = await fetchAuth("/api/kindle/pairings", {method:"POST"});
-    const data = await response.json();
-    if (!response.ok) { note.textContent = data.error || "生成失败"; return; }
-    link.href = data.url; link.textContent = data.url; link.hidden = false;
-    note.textContent = "10 分钟内在 Kindle 浏览器打开此链接，并在设备上确认。链接仅可用一次。";
-  } catch (e) { note.textContent = "网络暂不可用，请稍后重试"; }
-  finally { button.disabled = false; }
-});
+/* KINDLE_EXTENSION_JS */
 function switchWhoFromForm(){
   const inp = $("#whoInput");
   if (!inp) return;
@@ -2875,7 +2818,10 @@ async function showBuildTag(){
   try {
     const r = await fetchAuth("/api/ping");
     const j = await r.json();
-    if (j && j.tts) ttsMode = "backend";   // 后端配了朗读服务 → 用后端嗓子（手机 WebView 也支持）
+    if (j && j.tts) ttsMode = "backend"; // 后端配了朗读服务时用后端嗓子
+    kindleInstalled = !!(j && Array.isArray(j.extensions) && j.extensions.includes("kindle"));
+    renderLibFooter();
+    if (kindleInstalled && gateIdentity === "user" && getWhoToken()) refreshKindleSessions();
     const el = document.createElement("div");
     el.id = "buildTag";
     el.textContent = "内核 " + (j.built || "?") + " · 后端 " + (j.core || "?");
@@ -2896,7 +2842,6 @@ async function bootReader(){
   state.who = gateIdentity || urlWho || getWho();
   if (gateIdentity) setWho(gateIdentity);
   renderLibFooter();
-  if (gateIdentity === "user" && getWhoToken()) refreshKindleSessions();
   await showBuildTag();   // 顺便确定用哪个朗读引擎（拿不到就用系统嗓子）
   // 初始化朗读（不支持环境会在这里走降级分支）
   ttsInit();

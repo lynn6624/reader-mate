@@ -7,12 +7,11 @@
 | 目录 | 内容 |
 |---|---|
 | `core/` | 通用内核：`reader_server.py` + `web/reader.html`。Windows / Linux / Android 都能跑，只监听本机（默认 `127.0.0.1:8831`）。 |
-| `mcp-edition/` | 云端 MCP 版：在 `core/` 基础上加多人共读、结构化划线与批注、身份令牌管理页。独立部署，与 `core/` 并行维护。 |
+| `mcp-edition/` | 云端 MCP 版：多人共读、结构化划线与批注、身份令牌管理页；默认不含 Kindle 功能。 |
+| `kindle-extension/` | MCP 版的可选 Kindle 阅读扩展，需与同版 `mcp-edition/` 搭配安装。 |
 | `operit/` | Operit 特供壳：把 `core/` 的页面挂进 Operit 主侧边栏（ToolPkg）。 |
 
-> **两个版本的关系**：`core/` 是**单机桌面版** —— 只听 `127.0.0.1`，单人使用，书不出本机；
-> `mcp-edition/` 是**云端共读版** —— 多身份、MCP 接口，部署在服务器上供多端共享。
-> **两者是并行维护的两套代码，不是同一份代码的分叉。** 改动请推送到对应目录；两边的功能各自演进，不必强行拉齐。
+> `core/` 是单机桌面版；`mcp-edition/` 是独立部署的云端共读版。两套代码并行维护。Kindle 用户可按 `kindle-extension/README.md` 安装扩展，其余用户只需部署 MCP 版。
 
 ## 它做什么
 
@@ -23,14 +22,15 @@
 
 ## 它不是
 
-- 不是网盘 / 云书架（不上传你的书）
+- 不是网盘 / 云书架（单机版不上传你的书）
 - 不是书评工具（整本书级的感想交给文档）
 
 ## 快速开始
 
 1. `core/`：`python3 reader_server.py`（纯标准库，无需 pip）
 2. 浏览器打开 `http://127.0.0.1:8831/`
-3. 想挂进 Operit 侧边栏 → 看 `operit/README.md`
+3. 云端共读版见 `mcp-edition/DEPLOY.md`
+4. 想挂进 Operit 侧边栏 → 看 `operit/README.md`
 
 ## License
 

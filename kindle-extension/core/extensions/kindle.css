@@ -1,0 +1,7 @@
+#kindlePairing{margin-top:10px;border-top:1px solid var(--line);padding-top:10px}
+#kindlePairing[hidden]{display:none}
+#kindlePairing .whoHint{margin:4px 0}
+#kindlePairUrl{display:block;overflow-wrap:anywhere;color:var(--accent);margin:6px 0}
+#kindlePairUrl[hidden]{display:none}
+#kindleSessions{margin-top:6px}
+#kindleSessions .device{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:4px}

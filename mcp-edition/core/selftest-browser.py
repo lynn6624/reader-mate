@@ -27,6 +27,9 @@ with tempfile.TemporaryDirectory() as directory:
     base = pathlib.Path(directory)
     shutil.copy(ROOT / "reader_server.py", base / "reader_server.py")
     shutil.copytree(ROOT / "web", base / "web")
+    with_kindle = (ROOT / "extensions" / "kindle.py").exists()
+    if with_kindle:
+        shutil.copytree(ROOT / "extensions", base / "extensions")
     (base / "data").mkdir()
     (base / "书库").mkdir()
     (base / "data" / "identities.json").write_text(
@@ -145,11 +148,14 @@ with tempfile.TemporaryDirectory() as directory:
                 assert any("op001（001）" in label for label in labels), labels
                 assert any(label == "aru001" for label in labels), labels
                 assert not any(label == "001" for label in labels), labels
-                assert page.locator("#kindlePairing").is_visible()
-                page.locator("#kindleCreate").tap()
-                page.wait_for_function("document.querySelector('#kindlePairUrl').textContent.includes('/k/')")
-                assert page.locator("#kindlePairUrl").get_attribute("href").startswith(
-                    "https://reader.example.com/k/")
+                if with_kindle:
+                    assert page.locator("#kindlePairing").is_visible()
+                    page.locator("#kindleCreate").tap()
+                    page.wait_for_function("document.querySelector('#kindlePairUrl').textContent.includes('/k/')")
+                    assert page.locator("#kindlePairUrl").get_attribute("href").startswith(
+                        "https://reader.example.com/k/")
+                else:
+                    assert page.locator("#kindlePairing").count() == 0
                 context.close()
                 desktop = browser.new_context(viewport={"width": 1280, "height": 820})
                 desktop_page = desktop.new_page()

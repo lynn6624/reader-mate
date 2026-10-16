@@ -54,6 +54,12 @@ async def run():
                     except httpx.HTTPError: pass
                     await asyncio.sleep(.1)
                 else: raise AssertionError('Servers did not start')
+                assert a.json()['extensions'] == []
+                assert (await client.get(f'http://127.0.0.1:{hp}/kindle',
+                    headers={'X-Who-Token':'test-user'})).status_code == 404
+                assert (await client.post(f'http://127.0.0.1:{hp}/api/kindle/pairings',
+                    headers={'X-Who-Token':'test-user'})).status_code == 404
+                assert '<div id="kindlePairing"' not in (await client.get(f'http://127.0.0.1:{hp}/')).text
                 assert (await client.get(f'http://127.0.0.1:{hp}/api/books')).status_code == 401
                 legacy = (await client.get(f'http://127.0.0.1:{hp}/api/reading-progress',
                     params={'name':'test.txt'}, headers={'X-Who-Token':'test-user'})).json()

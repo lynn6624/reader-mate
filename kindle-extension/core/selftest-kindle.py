@@ -28,6 +28,7 @@ def main():
         base = pathlib.Path(directory)
         shutil.copy(ROOT / "reader_server.py", base / "reader_server.py")
         shutil.copytree(ROOT / "web", base / "web")
+        shutil.copytree(ROOT / "extensions", base / "extensions")
         (base / "data").mkdir()
         (base / "书库").mkdir()
         (base / "data" / "identities.json").write_text(
