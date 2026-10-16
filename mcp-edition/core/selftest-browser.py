@@ -34,7 +34,8 @@ with tempfile.TemporaryDirectory() as directory:
     (base / "书库" / "test.txt").write_text(BOOK, encoding="utf-8")
     port = free_port()
     url = f"http://127.0.0.1:{port}"
-    env = dict(os.environ, READER_CLOUD="1", READER_PORT=str(port))
+    env = dict(os.environ, READER_CLOUD="1", READER_PORT=str(port),
+               READER_MCP_PUBLIC_HOST="reader.example.com")
     process = subprocess.Popen([sys.executable, str(base / "reader_server.py")],
                                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -144,11 +145,17 @@ with tempfile.TemporaryDirectory() as directory:
                 assert any("op001（001）" in label for label in labels), labels
                 assert any(label == "aru001" for label in labels), labels
                 assert not any(label == "001" for label in labels), labels
+                assert page.locator("#kindlePairing").is_visible()
+                page.locator("#kindleCreate").tap()
+                page.wait_for_function("document.querySelector('#kindlePairUrl').textContent.includes('/k/')")
+                assert page.locator("#kindlePairUrl").get_attribute("href").startswith(
+                    "https://reader.example.com/k/")
                 context.close()
                 desktop = browser.new_context(viewport={"width": 1280, "height": 820})
                 desktop_page = desktop.new_page()
                 desktop_page.goto(url + "/?who_token=test-op004", wait_until="domcontentloaded")
                 desktop_page.wait_for_function("document.querySelector('#reader mark.multi') !== null")
+                assert not desktop_page.locator("#kindlePairing").is_visible()
                 assert desktop_page.evaluate("""() => [...document.querySelectorAll('#reader mark.multi')]
                     .some(m => m.textContent.includes('你') && m.style.getPropertyValue('--hl-color') === '#d4f0ee')""")
                 desktop_page.locator("#reader mark.multi").filter(has_text="你").first.click()

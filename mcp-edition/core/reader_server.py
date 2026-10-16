@@ -19,13 +19,17 @@ import io
 import json
 import os
 import re
+import secrets
 import threading
 import time
 import urllib.parse
 import urllib.request
 import zipfile
 from datetime import datetime
+from email.utils import formatdate
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from html import escape as html_escape
+from http.cookies import SimpleCookie
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 BOOKS_DIR = os.path.join(BASE, "书库")
@@ -38,6 +42,11 @@ MD_FILE = os.path.join(DATA_DIR, "阅读进度.md")
 # 身份令牌（D1）：{身份: 钥匙}。文件不存在 → 视为空（只有 user 能写），
 # 绝不能因为缺文件就报错——缺它就是「还没配」，行为退回到 v1.0。
 IDENTITIES_FILE = os.path.join(DATA_DIR, "identities.json")
+KINDLE_AUTH_FILE = os.path.join(DATA_DIR, "kindle_auth.json")
+KINDLE_PAIR_TTL = 600
+KINDLE_SESSION_TTL = 90 * 86400
+KINDLE_COOKIE = "rm_kindle_device"
+_kindle_attempts = {}
 # 写入审计：data/audit.log（JSONL，每行一条）。**只增不改**——它不防伪，
 # 只让「谁、什么时候、以什么身份、写了什么」留痕，事后可查。
 # 详见《V2-数据格式与限制》第六节 D1 的已知边界。
@@ -57,6 +66,93 @@ TOKEN = os.environ.get("READER_TOKEN", "").strip()
 CLOUD = os.environ.get("READER_CLOUD", "0") == "1"
 
 _lock = threading.Lock()
+
+
+def _kindle_store():
+    """独立于书籍数据；损坏时拒绝操作，绝不重置现有会话。"""
+    if not os.path.exists(KINDLE_AUTH_FILE):
+        return {"version": 1, "pairings": {}, "sessions": {}}
+    with open(KINDLE_AUTH_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if (not isinstance(data, dict) or data.get("version") != 1 or
+            not isinstance(data.get("pairings"), dict) or
+            not isinstance(data.get("sessions"), dict)):
+        raise ValueError("Kindle 会话文件格式异常")
+    return data
+
+
+def _save_kindle_store(data):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    temp = KINDLE_AUTH_FILE + "." + secrets.token_hex(8) + ".tmp"
+    try:
+        with open(temp, "x", encoding="utf-8", newline="\n") as f:
+            os.chmod(temp, 0o600)
+            json.dump(data, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp, KINDLE_AUTH_FILE)
+    finally:
+        if os.path.exists(temp):
+            os.remove(temp)
+
+
+def _kindle_prune(data, now):
+    for name in ("pairings", "sessions"):
+        data[name] = {key: value for key, value in data[name].items()
+                      if isinstance(value, dict) and value.get("expires", 0) > now}
+
+
+def _kindle_digest(value):
+    return hashlib.sha256(value.encode("ascii")).hexdigest()
+
+
+def _kindle_create_pairing():
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    with _lock:
+        data = _kindle_store()
+        now = int(time.time())
+        _kindle_prune(data, now)
+        if len(data["pairings"]) >= 3:
+            raise ValueError("已有 3 个待使用链接，请等 10 分钟后再生成")
+        code = "".join(secrets.choice(alphabet) for _ in range(10))
+        data["pairings"][_kindle_digest(code)] = {"expires": now + KINDLE_PAIR_TTL}
+        _save_kindle_store(data)
+    return code, now + KINDLE_PAIR_TTL
+
+
+def _kindle_redeem(code):
+    if not re.fullmatch(r"[A-HJ-NP-Z2-9]{10}", code):
+        return ""
+    with _lock:
+        data = _kindle_store()
+        now = int(time.time())
+        _kindle_prune(data, now)
+        if not data["pairings"].pop(_kindle_digest(code), None):
+            return ""
+        if len(data["sessions"]) >= 12:
+            raise ValueError("Kindle 设备已达上限，请先撤销旧设备")
+        session_id = secrets.token_hex(8)
+        secret = secrets.token_urlsafe(32)
+        data["sessions"][session_id] = {
+            "digest": _kindle_digest(secret), "reader_id": "user",
+            "created": now, "expires": now + KINDLE_SESSION_TTL}
+        _save_kindle_store(data)
+        return session_id + "." + secret
+
+
+def _kindle_session(cookie_value):
+    if not re.fullmatch(r"[0-9a-f]{16}\.[A-Za-z0-9_-]{40,50}", cookie_value or ""):
+        return None
+    session_id, secret = cookie_value.split(".", 1)
+    try:
+        session = _kindle_store()["sessions"].get(session_id)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    if (not isinstance(session, dict) or session.get("expires", 0) <= time.time() or
+            session.get("reader_id") != "user" or
+            not hmac.compare_digest(session.get("digest", ""), _kindle_digest(secret))):
+        return None
+    return session
 
 
 # ---------------------------------------------------------------- 基础工具
@@ -1026,12 +1122,145 @@ class Handler(BaseHTTPRequestHandler):
         if h:
             return h
         q = (self._query().get("who_token") or [""])[0].strip()
-        return q
+        if q:
+            return q
+        # Kindle 只保存独立设备 cookie，身份仍由服务端会话绑定到 user。
+        if self._kindle_cookie_session():
+            return load_identities().get("user", "")
+        return ""
+
+    def _kindle_cookie_session(self):
+        try:
+            cookie = SimpleCookie()
+            cookie.load(self.headers.get("Cookie", ""))
+            value = cookie[KINDLE_COOKIE].value if KINDLE_COOKIE in cookie else ""
+        except Exception:
+            return None
+        return _kindle_session(value)
+
+    def _kindle_cookie_only(self):
+        return (not self.headers.get("X-Who-Token") and
+                not (self._query().get("who_token") or [""])[0] and
+                bool(self._kindle_cookie_session()))
+
+    def _kindle_write_origin_ok(self):
+        if not self._kindle_cookie_only():
+            return True
+        origin = self.headers.get("Origin") or self.headers.get("Referer") or ""
+        parsed = urllib.parse.urlparse(origin)
+        public_host = os.environ.get("READER_MCP_PUBLIC_HOST", "").strip().lower()
+        allowed = {public_host} if CLOUD else {self.headers.get("Host", "").lower()}
+        if not CLOUD:
+            allowed.update({"127.0.0.1:%d" % PORT, "localhost:%d" % PORT})
+        return parsed.scheme in ("https", "http") and parsed.netloc.lower() in allowed
+
+    def _require_kindle_owner(self):
+        token = (self.headers.get("X-Who-Token") or "").strip()
+        if not token or resolve_who(None, token) != "user":
+            self._err("仅主人令牌可管理 Kindle 设备", 403)
+            return False
+        return True
+
+    def _kindle_page(self, code):
+        if not re.fullmatch(r"[A-HJ-NP-Z2-9]{10}", code):
+            return self._err("链接无效", 404)
+        body = ("<!doctype html><html lang=zh><meta charset=utf-8>"
+                "<meta name=viewport content='width=device-width,initial-scale=1'>"
+                "<title>小书桌 Kindle 配对</title>"
+                "<style>body{font:20px/1.7 serif;max-width:36em;margin:2em auto;padding:0 1em}"
+                "button{font:inherit;padding:.6em 1.4em;background:#eee;border:1px solid #777}"
+                "</style><h1>小书桌 Kindle 配对</h1>"
+                "<p>确认将这台设备作为 002 的阅读设备接入？这不会显示或保存主人令牌。</p>"
+                "<form method=post action='/k/" + html_escape(code) + "'>"
+                "<button type=submit>确认配对并打开书桌</button></form>"
+                "<p>链接十分钟有效，且只能使用一次。</p></html>").encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")
+        self.send_header("X-Frame-Options", "DENY")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _kindle_pair_post(self, code):
+        if not re.fullmatch(r"[A-HJ-NP-Z2-9]{10}", code):
+            return self._err("配对链接无效或已使用", 410)
+        # 表单不需要正文；不在持久连接上留下未读的攻击者输入。
+        if int(self.headers.get("Content-Length") or "0") > 0:
+            self.close_connection = True
+            return self._err("配对请求不需要正文", 400)
+        ip = self._client_ip()
+        now = time.time()
+        with _lock:
+            attempts = [stamp for stamp in _kindle_attempts.get(ip, []) if now - stamp < 600]
+            if len(attempts) >= 8:
+                return self._err("尝试过多，请稍后重试", 429)
+            attempts.append(now)
+            _kindle_attempts[ip] = attempts
+            if len(_kindle_attempts) > 256:
+                _kindle_attempts.clear()
+        cookie_value = _kindle_redeem(code)
+        if not cookie_value:
+            return self._err("配对链接无效或已使用", 410)
+        self.send_response(303)
+        self.send_header("Location", "/?kindle=1")
+        cookie = (KINDLE_COOKIE + "=" + cookie_value +
+                  "; Path=/; HttpOnly; SameSite=Lax; Max-Age=" + str(KINDLE_SESSION_TTL) +
+                  "; Expires=" + formatdate(time.time() + KINDLE_SESSION_TTL, usegmt=True))
+        if CLOUD:
+            cookie += "; Secure"
+        self.send_header("Set-Cookie", cookie)
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _api_kindle_sessions(self):
+        if not self._require_kindle_owner():
+            return
+        data = _kindle_store()
+        now = time.time()
+        rows = [{"session_id": key, "created": value["created"], "expires": value["expires"]}
+                for key, value in data["sessions"].items()
+                if isinstance(value, dict) and value.get("expires", 0) > now]
+        return self._json({"ok": True, "sessions": rows})
+
+    def _api_kindle_pairing(self):
+        if not self._require_kindle_owner():
+            return
+        base = os.environ.get("READER_KINDLE_PUBLIC_BASE", "").strip().rstrip("/")
+        if not base:
+            host = os.environ.get("READER_MCP_PUBLIC_HOST", "").strip().lower()
+            if CLOUD and not re.fullmatch(r"[a-z0-9.-]+(?::[0-9]{1,5})?", host):
+                return self._err("请先配置 READER_MCP_PUBLIC_HOST", 503)
+            base = "https://" + host if CLOUD else "http://127.0.0.1:%d" % PORT
+        if not re.fullmatch(r"https://[a-zA-Z0-9.-]+(?::[0-9]{1,5})?", base) and not (
+                not CLOUD and re.fullmatch(r"http://(?:127\.0\.0\.1|localhost):[0-9]{1,5}", base)):
+            return self._err("Kindle 公网地址配置不合法", 503)
+        code, expires = _kindle_create_pairing()
+        return self._json({"ok": True, "url": base + "/k/" + code, "expires": expires}, 201)
+
+    def _api_kindle_revoke(self, session_id):
+        if not self._require_kindle_owner():
+            return
+        if not re.fullmatch(r"[0-9a-f]{16}", session_id):
+            return self._err("设备编号无效", 400)
+        with _lock:
+            data = _kindle_store()
+            if session_id not in data["sessions"]:
+                return self._err("设备不存在", 404)
+            del data["sessions"][session_id]
+            _save_kindle_store(data)
+        return self._json({"ok": True})
 
     # ---- GET ----
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
         try:
+            if path.startswith("/k/"):
+                return self._kindle_page(path[3:])
             if path in ("/", "/index.html", "/reader.html"):
                 return self._page()
             if path == "/api/auth-check":
@@ -1062,6 +1291,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/books":
                 return self._api_books()
+            if path == "/api/kindle/sessions":
+                return self._api_kindle_sessions()
             if path == "/api/book":
                 return self._api_book()
             if path == "/api/progress":
@@ -1090,6 +1321,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/tts":
                 return self._api_tts()
             if path == "/api/audit":
+                if self._kindle_cookie_only():
+                    return self._err("Kindle 设备不能读取审计", 403)
                 if CLOUD and resolve_who(None, self._who_token()) != "user":
                     return self._err("审计仅限主人读取", 403)
                 return self._api_audit()
@@ -1284,6 +1517,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if not self._require_token():
                 return
+            if not self._kindle_write_origin_ok():
+                return self._err("来源不允许", 403)
+            if path.startswith("/api/kindle/sessions/"):
+                return self._api_kindle_revoke(path.rsplit("/", 1)[-1])
             if path == "/api/notes/highlight":
                 return self._api_notes_highlight_delete()
             return self._err("没有这个路径", 404)
@@ -1293,9 +1530,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
         try:
+            if path.startswith("/k/"):
+                return self._kindle_pair_post(path[3:])
             # 所有 POST 接口都在鉴权后面
             if not self._require_token():
                 return
+            if not self._kindle_write_origin_ok():
+                return self._err("来源不允许", 403)
+            if path == "/api/kindle/pairings":
+                return self._api_kindle_pairing()
             if path == "/api/import":
                 return self._api_import()
             if path == "/api/progress":
@@ -1315,6 +1558,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._err("服务端出错：%s" % e, 500)
 
     def _api_import(self):
+        if self._kindle_cookie_only():
+            return self._err("Kindle 设备不能导入书籍", 403)
         if CLOUD and resolve_who(None, self._who_token()) != "user":
             return self._err("导入仅限主人", 403)
         filename = (self._query().get("name") or [""])[0]
@@ -1336,6 +1581,8 @@ class Handler(BaseHTTPRequestHandler):
                            "overwrote": False})
 
     def _api_delete(self):
+        if self._kindle_cookie_only():
+            return self._err("Kindle 设备不能删除书籍", 403)
         if CLOUD and resolve_who(None, self._who_token()) != "user":
             return self._err("删除书籍仅限主人", 403)
         name = safe_name((self._query().get("name") or [""])[0])

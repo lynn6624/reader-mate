@@ -27,9 +27,17 @@ sudo -u reader python3 deploy/init-token-bootstrap.py
 
 `reader.example.com` 指向 Web 阅读页；其 `/mcp/*` 路由转发到 8832，其余路径到 8831。`token.example.com` 转发到 8860。两者可通过 Cloudflare Tunnel 橙云代理，示例见 `deploy/cloudflared-ingress.example.yml`。需要 ChatGPT 的无挑战直连入口时，把 `mcp.example.com` 设为灰云 DNS-only A 记录，使用 Caddy 将 HTTPS 443 转发到 8832，示例见 `deploy/Caddyfile.grey.example`。安全组只开放 443；不要开放 8831、8832、8860。
 
+Kindle 的 `/k/<一次性码>` 也必须转发到 Web 8831。Web 服务使用 `READER_MCP_PUBLIC_HOST` 生成 `https://reader.example.com/k/...`；若阅读页使用不同域名，可设 `READER_KINDLE_PUBLIC_BASE=https://reader.example.com`。两者都必须指向同一 Web 服务并使用 HTTPS。不要记录完整配对路径。
+
 通用 MCP URL 为 `https://reader.example.com/mcp/<state/mcp-path-key.txt 中的值>`；客户端还需填写自己的 Bearer 身份令牌。令牌管理页只会在管理员成功创建身份后同时返回这两项。示例 ChatGPT 专用 URL 为 `https://mcp.example.com/mcp/<state/mcp-004-url-key.txt 中的值>`，Auth 选 None；服务端会按现有 `004` 身份令牌鉴权。此 URL 本身可调用 004 的读写工具，应像口令一样保管；泄露时轮换专用路径钥匙并重启 MCP 服务。不要在代理访问日志中记录完整 MCP 路径。
 
 ## 4. 验收与回滚
+
+### Kindle 设备配对
+
+主人 `user` 用现有身份令牌进入阅读页，在书库抽屉底部生成配对链接；只在受信任的 Kindle 浏览器打开并点击确认。GET 只显示表单，POST 才一次性兑换。设备 Cookie 为 `Secure`、`HttpOnly`、`SameSite=Lax`，有效期 90 天；服务端只保存随机会话密钥的摘要。主人可列出并撤销 Kindle 会话，设备不能凭 Cookie 创建新配对、导入或删书、读取审计。设备的进度和批注仍归 `user（002）`，MCP 的 Bearer 令牌不变。
+
+隔离验证运行 `python3 core/selftest-kindle.py`、`python3 core/selftest-cloud.py` 和浏览器测试。上线前备份 `core/reader_server.py` 与 `core/web/reader.html`；先核对哈希，再原子替换并重启 `reader-web.service`。新文件 `core/data/kindle_auth.json` 在首次生成链接时懒创建，权限应为 0600，目录归 `reader` 且为 0700；无需数据库迁移。代码回滚时保留此文件与其他数据；旧版忽略设备会话，恢复新版代码后会话可继续使用。若需立即使所有 Kindle 会话失效，应先在主人页面逐台撤销。
 
 ### 阅读进度增量
 
