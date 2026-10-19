@@ -1000,8 +1000,6 @@ function createSpeechSynthesisEngine(){
   // 所以回调里必须确认「我还是当前这句」，否则那个迟到的回调会把状态推到下一段——
   // 表现就是：滚动条跳了、语音没跳、同一段被念两遍（2026-09-30 002 报的 bug）。
   let cur = null;
-  let idleCheck = null;
-  function clearIdleCheck(){ if (idleCheck){ clearInterval(idleCheck); idleCheck = null; } }
   // 一些浏览器在首次 getVoices() 时还没异步加载完；onvoiceschanged 触发后再补一次
   let cachedVoices = [];
   function pickVoices(){
@@ -1025,31 +1023,18 @@ function createSpeechSynthesisEngine(){
         if (v) u.voice = v;
       }
       cur = u;   // 从这一句起，「当前」就是它
-      clearIdleCheck();
       // 只有当前这句的回调才算数：cancel() 后被取消的那个仍会 fire，必须拦掉。
       // 再加一道"只算一次"：这样"派下一段"是幂等的（个别浏览器会重复 fire）。
       const once = function(){
         if (cur !== u || u.__ended) return;
         u.__ended = true;
-        clearIdleCheck();
         if (typeof onEnd === "function") onEnd();
       };
       u.onend = once;
       u.onerror = function(e){
         if (cur !== u || u.__ended) return;
         u.__ended = true;
-        clearIdleCheck();
         if (typeof onError === "function") onError((e && e.error) || "unknown");
-      };
-      // 有些手机浏览器播完后漏发 end。只在确认这句已经开始、合成器也已空闲时补接续。
-      u.onstart = function(){
-        clearIdleCheck();
-        let idleHits = 0;
-        idleCheck = setInterval(function(){
-          if (cur !== u || u.__ended) return;
-          idleHits = (!SYN.speaking && !SYN.pending && !SYN.paused) ? idleHits + 1 : 0;
-          if (idleHits >= 2) once();
-        }, 500);
       };
       try { SYN.speak(u); } catch (e){ u.onerror({error: (e && e.message) || "speak failed"}); }
     },
@@ -1057,7 +1042,6 @@ function createSpeechSynthesisEngine(){
     resume: function(){ try { SYN.resume(); } catch (e){} },
     stop: function(){
       cur = null;                        // 先作废回调，再 cancel
-      clearIdleCheck();
       try { SYN.cancel(); } catch (e){}
     },
   };
@@ -1333,13 +1317,10 @@ function ttsSpeakSeg(idx, fromLocal){
   const myGen = tts.gen;            // 记住这一代的编号
   ttsEngine.speak(chunk.text, { rate: tts.rate, voice: tts.voice === "default" ? null : tts.voice }, () => {
     if (myGen !== tts.gen) return;  // 过期回调（换音色/重开之前留下的）——直接丢掉
-    // 离开浏览器的 end 回调后再交下一句，避免手机合成器还未释放上一句。
-    setTimeout(() => {
-      if (myGen !== tts.gen) return;
-      const next = (chunk.end < seg.text.length) ? {idx, local: chunk.end} : {idx: idx + 1, local: 0};
-      if (tts.state === "paused"){ tts.pendingNext = next; return; }
-      if (tts.state === "playing") ttsSpeakSeg(next.idx, next.local);
-    }, 0);
+    // 手机浏览器可能要求下一句在 end 回调里入队，不能延迟到下一轮事件循环。
+    const next = (chunk.end < seg.text.length) ? {idx, local: chunk.end} : {idx: idx + 1, local: 0};
+    if (tts.state === "paused"){ tts.pendingNext = next; return; }
+    if (tts.state === "playing") ttsSpeakSeg(next.idx, next.local);
   }, reason => {
     if (myGen !== tts.gen) return;
     ttsStopInternal(true);
