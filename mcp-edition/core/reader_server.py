@@ -35,6 +35,7 @@ from http.cookies import SimpleCookie
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 BOOKS_DIR = os.path.join(BASE, "书库")
+REFERENCE_BOOK_NAME = "MCP工具标准调用参考_只读.txt"
 DATA_DIR = os.path.join(BASE, "data")
 HTML_FILE = os.path.join(BASE, "web", "reader.html")
 PROGRESS_FILE = os.path.join(DATA_DIR, "progress.json")
@@ -1399,6 +1400,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             name, text, source_format, encoding = prepare_import(filename, self._body())
         except ValueError as exc:
             return self._err(str(exc))
+        if CLOUD and name == REFERENCE_BOOK_NAME:
+            return self._err("内置只读参考只能通过部署更新", 403)
         with _lock:
             if os.path.exists(book_path(name)):
                 return self._err("书库已有同名书籍；请改名后再上传，避免覆盖现有阅读记录", 409)
@@ -1420,6 +1423,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         name = safe_name((self._query().get("name") or [""])[0])
         if not name:
             return self._err("书名不合法")
+        if CLOUD and name == REFERENCE_BOOK_NAME:
+            return self._err("内置只读参考不可从书库删除", 403)
         p = book_path(name)
         if not os.path.isfile(p):
             return self._err("书库里没有这本书", 404)

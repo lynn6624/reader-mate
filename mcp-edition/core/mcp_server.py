@@ -49,8 +49,11 @@ security = TransportSecuritySettings(
     allowed_origins=["http://127.0.0.1:*", "http://localhost:*"] +
                     ["https://" + host for host in public_hosts])
 mcp = FastMCP("ReaderMate", stateless_http=True, json_response=True,
-              streamable_http_path=MCP_PATH, transport_security=security)
+              streamable_http_path=MCP_PATH, transport_security=security,
+              instructions=("先调用 get_calling_guide 查看标准调用顺序。read_book 只读取正文，"
+                            "不会自动保存进度；实际读完后调用 update_progress 保存。"))
 API = os.environ.get("READER_API_URL", "http://127.0.0.1:8831").rstrip("/")
+GUIDE_FILE = os.path.join(os.path.dirname(__file__), reader.REFERENCE_BOOK_NAME)
 
 def bearer(headers):
     value = headers.get("authorization", "")
@@ -90,13 +93,20 @@ async def api(ctx, path, payload=None, method=None):
     return await asyncio.to_thread(request)
 
 @mcp.tool()
+async def get_calling_guide(ctx: Context) -> dict:
+    """Read the standard MCP calling guide before using bookshelf, notes, or progress tools. Read-only."""
+    credentials(ctx)
+    with open(GUIDE_FILE, encoding="utf-8") as stream:
+        return {"name": reader.REFERENCE_BOOK_NAME, "text": stream.read()}
+
+@mcp.tool()
 async def list_books(ctx: Context) -> dict:
-    """List the shared TXT bookshelf."""
+    """List the shared TXT bookshelf. Call get_calling_guide first if the workflow is unfamiliar."""
     return await api(ctx, "/api/books")
 
 @mcp.tool()
 async def read_book(name: str, ctx: Context, offset: int = 0, length: int = 3000) -> dict:
-    """Read a bounded range. Offsets are UTF-16 units, matching the browser. Use next_offset to continue."""
+    """Read a bounded UTF-16 range. Use next_offset to continue; call update_progress to save, never automatic."""
     if offset < 0 or not 1 <= length <= 12000:
         raise ValueError("offset >= 0; length 1..12000")
     book = await api(ctx, "/api/book?" + urllib.parse.urlencode({"name": name}))
@@ -112,7 +122,11 @@ async def read_book(name: str, ctx: Context, offset: int = 0, length: int = 3000
         text = raw[offset * 2:end].decode("utf-16-le")
     return {"name": book["name"], "offset": offset, "next_offset": end // 2,
             "total_units": len(raw) // 2, "text": text,
-            "book_revision": book["book_revision"], "by_who": book["by_who"]}
+            "book_revision": book["book_revision"], "by_who": book["by_who"],
+            "reminder": ("阅读进度不会随 read_book 自动保存。实际读完后请调用 "
+                         "update_progress(name, offset, expected_revision)；"
+                         "完整读完本次 text 才可用 next_offset，否则传实际停下的位置。"
+                         "expected_revision 建议先从 get_reading_progress 取得。")}
 
 @mcp.tool()
 async def get_reading_progress(name: str, ctx: Context, reader_id: str = "") -> dict:

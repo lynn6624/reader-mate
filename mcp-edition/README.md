@@ -5,6 +5,7 @@
 - `core/reader_server.py` 与 `core/web/reader.html`：书库、阅读进度、多人划线和批注。
 - Kindle 阅读是**单独安装的可选扩展**。默认源码包不含扩展；安装匹配版本的 Kindle 包后，Web 服务才提供配对链接与可撤销设备会话。配对后沿用主人 `user（002）` 的进度，不向设备交付主人令牌。
 - `core/mcp_server.py`：Streamable HTTP MCP，按身份令牌读取和写入共读数据。
+- `core/MCP工具标准调用参考_只读.txt`：MCP 工具的标准调用顺序；部署时复制一份到共享书库。Agent 可先调用 `get_calling_guide({})`，`read_book` 的独立 `reminder` 字段会提示读完后调用 `update_progress` 保存位置。
 - `token-mcp/`：管理员创建身份令牌的网页；创建成功时同时显示通用 MCP URL。
 - `deploy/`：systemd、代理和密钥初始化示例；步骤见 [DEPLOY.md](DEPLOY.md)。
 

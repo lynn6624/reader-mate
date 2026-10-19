@@ -17,6 +17,8 @@ sudo -u reader python3 deploy/init-token-bootstrap.py
 
 初始化脚本遇到已有文件会保留或拒绝覆盖；迁移旧实例时先备份 `core/data/`、`core/书库/`、`state/`，切勿拿空目录覆盖。`init-identities.py` 只建主人 `user` 身份；其他共读身份在令牌管理页创建。主人令牌和一次性初始化码仅从服务器私下取用，不放入 URL 文档、日志或仓库。
 
+把 `core/MCP工具标准调用参考_只读.txt` 以相同文件名复制到 `core/书库/`，设为 root 属主、0444 权限；先确认书库没有同名用户文件。云端上传与删除接口会拒绝改动此参考书。MCP 工具本身从 `core/` 读取它；若升级时更换内容，应同时更新两份文件。它不是数据库迁移，其他书籍和阅读数据不需要改动。
+
 ## 2. 配置服务
 
 以 `deploy/reader.env.example` 为模板创建 `/etc/reader-mate.env`，填自己的两个 MCP Host 和通用 URL 基址。文件权限设为 0600。默认路径钥匙文件位于 `/opt/reader-mate/state/`。若使用其他位置，需同时配置 `READER_MCP_PATH_KEY_FILE` 与 `READER_MCP_004_KEY_FILE`。

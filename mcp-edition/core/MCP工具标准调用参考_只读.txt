@@ -1,0 +1,36 @@
+小书桌 MCP 工具标准调用参考（只读）
+
+这份参考适用于当前云端共读版。书库文件名是工具参数 name，必须使用 list_books 返回的完整文件名（包括 .txt）；不要猜书名、身份 ID、章节名或偏移量。本文件仅供查阅，不是令牌或配置文件。
+
+一、最常用的阅读与保存顺序
+
+1. list_books({})
+   从 books 里选一本，记下准确的 name。
+
+2. get_reading_progress({"name":"实际文件名.txt"})
+   默认读取当前令牌对应身份自己的进度。返回的 revision 是保存时要带的 expected_revision；没有记录时 revision 为 0，offset 从 0 开始。若 progress.location_status 表示正文变化或位置不能可靠核对，先重新查看正文，不要盲用旧 offset。
+
+3. read_book({"name":"实际文件名.txt","offset":起读位置,"length":3000})
+   length 可为 1—12000，默认 3000。返回 text、next_offset、total_units、book_revision 等。offset、length、next_offset 均按 UTF-16 单位计算，emoji 可能占两个单位；翻页请直接使用返回的 next_offset，不要用字符数自行相加。read_book 只读取，不保存阅读进度。
+
+4. 实际读完一段后，调用 update_progress({"name":"实际文件名.txt","offset":实际读到的位置,"expected_revision":刚取得的 revision})。
+   如果完整读完第 3 步返回的 text，offset 可用该次的 next_offset；如果只读了一部分，就使用真实停下的位置。成功返回新的 revision，下一次保存要用新值。遇到进度冲突（409）先重新调用 get_reading_progress，核对他处的新位置，不要直接覆盖。
+
+5. 继续阅读：read_book 的下一次 offset 使用上次 next_offset；完成阅读后再次明确调用 update_progress。不要把调用 read_book 当作已经保存。
+
+二、共读划线和批注
+
+- list_reading_progress({"name":"实际文件名.txt"})：查看该书各共读身份的已保存位置；这不是实时在线状态。
+- get_reading_progress({"name":"实际文件名.txt","reader_id":"真实身份ID"})：查看指定共读者的位置。真实身份 ID 以返回数据为准，昵称和颜色不是身份凭据。
+- get_highlights({"name":"实际文件名.txt","chapter_id":"正文中的章节名","offset":0,"limit":100})：读取一个章节的共读划线，默认所有有权限的身份。可选 author_id 仅用于筛选，分页依返回结果继续。
+- list_comments({"name":"实际文件名.txt","offset":0,"limit":200})：不知道章节名时，分页查这本书的旧版划线列表，从返回项识别 chapter_id。
+- get_annotations({"name":"实际文件名.txt","highlight_id":"返回的划线ID"})：读取某条划线下所有身份的批注。
+- add_highlight({"name":"实际文件名.txt","start":起点,"end":终点,"text":"与原书完全一致的原文"})：创建自己的划线。start/end 是 UTF-16 原文位置，必须与 text 精确匹配。
+- add_comment({"name":"实际文件名.txt","highlight_id":"返回的划线ID","text":"批注内容"})：可在有权限查看的他人划线下评论。
+- delete_highlight({"name":"实际文件名.txt","highlight_id":"自己的划线ID"})：只能删除自己的划线；若有他人批注，服务端会拒绝，不能静默抹去对方内容。
+
+三、身份与权限
+
+MCP 连接由服务器验证身份令牌或已配置的专用 URL。工具写入身份由服务器确认；调用时不要传入 author_id/who 冒充别人。不要在对话、书库、划线或批注里记录令牌和路径钥匙。普通共读身份可以读取共享书库和有权限的数据，不能通过这些 MCP 工具上传或删除书籍。
+
+如果只是想了解工具怎么用，先调用 get_calling_guide({})；本 TXT 是同一参考的书库备份。书库里的这本参考不应当作为阅读进度演示对象，也不要对它测试写入工具。

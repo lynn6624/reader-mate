@@ -18,6 +18,8 @@ async def run():
         base = pathlib.Path(d)
         for filename in ('reader_server.py', 'mcp_server.py'):
             shutil.copy(ROOT / filename, base / filename)
+        guide_name = 'MCP工具标准调用参考_只读.txt'
+        shutil.copy(ROOT / guide_name, base / guide_name)
         shutil.copytree(ROOT / 'web', base / 'web')
         (base / 'data').mkdir(); (base / '书库').mkdir()
         (base / 'state').mkdir()
@@ -32,6 +34,7 @@ async def run():
         identities = {n: 'test-' + n for n in ('user', 'op001', 'op004', '004')}
         (base / 'data' / 'identities.json').write_text(json.dumps(identities))
         (base / '书库' / 'test.txt').write_text('第一章\n你好😀一起读书。\n第二段。', encoding='utf8')
+        shutil.copy(ROOT / guide_name, base / '书库' / guide_name)
         (base / 'data' / 'progress.json').write_text(json.dumps({
             'version':1, 'books':{'test.txt':{
                 'offset':4, 'anchor':'你好😀一起读书。 第二段。',
@@ -67,6 +70,13 @@ async def run():
                 assert legacy['progress']['revision'] == 0
                 assert (await client.get(f'http://127.0.0.1:{hp}/api/books', headers={'X-Who-Token':'bad'})).status_code == 401
                 assert (await client.post(f'http://127.0.0.1:{hp}/api/delete?name=test.txt', headers={'X-Who-Token':'test-op001'})).status_code == 403
+                books = (await client.get(f'http://127.0.0.1:{hp}/api/books', headers={'X-Who-Token':'test-user'})).json()
+                assert guide_name in json.dumps(books, ensure_ascii=False)
+                assert (await client.post(f'http://127.0.0.1:{hp}/api/delete',
+                    params={'name':guide_name}, headers={'X-Who-Token':'test-user'})).status_code == 403
+                assert (await client.post(f'http://127.0.0.1:{hp}/api/import',
+                    params={'name':guide_name}, headers={'X-Who-Token':'test-user'},
+                    content=b'replacement')).status_code == 403
                 assert (await client.post(f'http://127.0.0.1:{mp}/mcp/{path_key}')).status_code == 401
                 assert (await client.post(f'http://127.0.0.1:{mp}/mcp', headers={'Authorization':'Bearer test-user'})).status_code == 404
                 assert (await client.post(f'http://127.0.0.1:{mp}/mcp/{chatgpt_key}')).status_code == 404
@@ -80,13 +90,16 @@ async def run():
                     async with streamable_http_client(f'http://127.0.0.1:{mp}/mcp/{path_key}', http_client=hc) as (r,w,_):
                         async with ClientSession(r,w) as session:
                             await session.initialize()
-                            tools = await session.list_tools(); assert len(tools.tools) == 11
+                            tools = await session.list_tools(); assert len(tools.tools) == 12
                             async def call(name, args):
                                 result = await session.call_tool(name, args)
                                 assert not result.isError, result
                                 return result.structuredContent or json.loads(result.content[0].text)
+                            guide = await call('get_calling_guide', {})
+                            assert guide['name'] == guide_name and 'update_progress' in guide['text']
                             book = await call('read_book', {'name':'test.txt', 'offset':0, 'length':7})
                             assert book['text'] == '第一章\n你好' and book['next_offset'] == 6
+                            assert list(book)[-1] == 'reminder' and 'update_progress' in book['reminder']
                             before = await call('get_reading_progress', {'name':'test.txt'})
                             revision = before['revision']
                             saved = await call('update_progress', {'name':'test.txt',
@@ -123,7 +136,7 @@ async def run():
                         f'http://127.0.0.1:{mp}/mcp/{chatgpt_key}', http_client=hc) as (r,w,_):
                     async with ClientSession(r,w) as session:
                         await session.initialize()
-                        assert len((await session.list_tools()).tools) == 11
+                        assert len((await session.list_tools()).tools) == 12
                         result = await session.call_tool('get_highlights', {
                             'name':'test.txt', 'chapter_id':'第一章'})
                         assert not result.isError, result
