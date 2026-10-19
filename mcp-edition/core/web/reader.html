@@ -1000,6 +1000,8 @@ function createSpeechSynthesisEngine(){
   // 所以回调里必须确认「我还是当前这句」，否则那个迟到的回调会把状态推到下一段——
   // 表现就是：滚动条跳了、语音没跳、同一段被念两遍（2026-09-30 002 报的 bug）。
   let cur = null;
+  let idleCheck = null;
+  function clearIdleCheck(){ if (idleCheck){ clearInterval(idleCheck); idleCheck = null; } }
   // 一些浏览器在首次 getVoices() 时还没异步加载完；onvoiceschanged 触发后再补一次
   let cachedVoices = [];
   function pickVoices(){
@@ -1015,7 +1017,7 @@ function createSpeechSynthesisEngine(){
   return {
     isSupported: () => true,
     getVoices: () => pickVoices(),
-    speak: function(text, opts, onEnd){
+    speak: function(text, opts, onEnd, onError){
       const u = new SpeechSynthesisUtterance(String(text || ""));
       if (opts && typeof opts.rate === "number") u.rate = opts.rate;
       if (opts && opts.voice){
@@ -1023,21 +1025,39 @@ function createSpeechSynthesisEngine(){
         if (v) u.voice = v;
       }
       cur = u;   // 从这一句起，「当前」就是它
+      clearIdleCheck();
       // 只有当前这句的回调才算数：cancel() 后被取消的那个仍会 fire，必须拦掉。
       // 再加一道"只算一次"：这样"派下一段"是幂等的（个别浏览器会重复 fire）。
       const once = function(){
         if (cur !== u || u.__ended) return;
         u.__ended = true;
+        clearIdleCheck();
         if (typeof onEnd === "function") onEnd();
       };
       u.onend = once;
-      u.onerror = once;
-      try { SYN.speak(u); } catch (e){ if (cur === u && typeof onEnd === "function") onEnd(); }
+      u.onerror = function(e){
+        if (cur !== u || u.__ended) return;
+        u.__ended = true;
+        clearIdleCheck();
+        if (typeof onError === "function") onError((e && e.error) || "unknown");
+      };
+      // 有些手机浏览器播完后漏发 end。只在确认这句已经开始、合成器也已空闲时补接续。
+      u.onstart = function(){
+        clearIdleCheck();
+        let idleHits = 0;
+        idleCheck = setInterval(function(){
+          if (cur !== u || u.__ended) return;
+          idleHits = (!SYN.speaking && !SYN.pending && !SYN.paused) ? idleHits + 1 : 0;
+          if (idleHits >= 2) once();
+        }, 500);
+      };
+      try { SYN.speak(u); } catch (e){ u.onerror({error: (e && e.message) || "speak failed"}); }
     },
     pause: function(){ try { SYN.pause(); } catch (e){} },
     resume: function(){ try { SYN.resume(); } catch (e){} },
     stop: function(){
       cur = null;                        // 先作废回调，再 cancel
+      clearIdleCheck();
       try { SYN.cancel(); } catch (e){}
     },
   };
@@ -1142,7 +1162,7 @@ let ttsMode = "system";
 const ttsEngine = {
   isSupported: () => (ttsMode === "backend") ? true : ttsEngineSystem.isSupported(),
   getVoices: () => (ttsMode === "backend") ? ttsEngineBackend.getVoices() : ttsEngineSystem.getVoices(),
-  speak: (t, o, cb) => (ttsMode === "backend") ? ttsEngineBackend.speak(t, o, cb) : ttsEngineSystem.speak(t, o, cb),
+  speak: (t, o, cb, err) => (ttsMode === "backend") ? ttsEngineBackend.speak(t, o, cb) : ttsEngineSystem.speak(t, o, cb, err),
   // 在用户手势里换音频播放许可（只有后端音频需要；系统语音合成不需要）
   unlock: () => { if (ttsMode === "backend" && ttsEngineBackend.unlock) ttsEngineBackend.unlock(); },
   pause: () => (ttsMode === "backend") ? ttsEngineBackend.pause() : ttsEngineSystem.pause(),
@@ -1162,10 +1182,11 @@ const tts = {
   followScroll: true,
   rate: 1,
   voice: "default",
-  dirtySegs: 0,           // 距上次写盘又走了多少段
+  dirtySegs: 0,           // 距上次写盘又走了多少朗读小段
   lastSaveAt: 0,          // 上次写盘的时间戳（ms）
   saveTimer: null,
   pendingResumeFrom: 0,   // 用于"从上次的位置继续念"时定位
+  pendingNext: null,       // 恰好在两句之间暂停时，继续按钮要接上下一句
   gen: 0,                 // 代际号：每次停止/重开都 +1，用来作废在途的旧回调
 };
 
@@ -1215,12 +1236,27 @@ function ttsMarkActiveSeg(idx){
   if (el) el.dataset.ttsActive = "1";
 }
 
-function ttsScrollToActive(idx){
+function ttsScrollToActive(idx, local){
   if (!tts.followScroll || !state.els[idx]) return;
   const el = state.els[idx];
   const v = view;
-  const elTop = el.offsetTop - VTOP;
-  const elBot = elTop + el.offsetHeight;
+  // 一段正文可占好几屏：按当前朗读文字的位置滚动，不能只盯整段的顶部。
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  let remaining = local || 0;
+  while (node && remaining >= node.textContent.length){
+    remaining -= node.textContent.length;
+    node = walker.nextNode();
+  }
+  let rect = el.getBoundingClientRect();
+  if (node){
+    const range = document.createRange();
+    range.setStart(node, Math.min(remaining, node.textContent.length));
+    range.setEnd(node, Math.min(remaining + 1, node.textContent.length));
+    rect = range.getBoundingClientRect();
+  }
+  const elTop = v.scrollTop + rect.top - v.getBoundingClientRect().top;
+  const elBot = elTop + rect.height;
   const viewTop = v.scrollTop;
   const viewBot = viewTop + v.clientHeight;
   // 已经在视野里就不动，避免抖
@@ -1228,17 +1264,16 @@ function ttsScrollToActive(idx){
   v.scrollTop = Math.max(0, elTop - v.clientHeight * 0.35);
 }
 
-/* 节流写盘：每 2 段或 10 秒哪个先到都触发；停止时补一次。
- * 实现：段数变化即时累计 dirtySegs；计时器兜底最慢 10 秒。 */
-function ttsMarkProgress(segIdx){
+/* 节流写盘：每 6 个朗读小段或 10 秒哪个先到都触发；停止时补一次。 */
+function ttsMarkProgress(segIdx, local){
   if (!state.book) return;
   const seg = state.segs[segIdx];
   if (!seg) return;
-  state.ttsOffset = seg.start;        // 只动 tts_offset，绝不动 offset
+  state.ttsOffset = seg.start + (local || 0); // 只动 tts_offset，绝不动 offset
   tts.dirtySegs++;
   const now = Date.now();
   const elapsed = now - (tts.lastSaveAt || 0);
-  if (tts.dirtySegs >= 2 || elapsed >= 10000){
+  if (tts.dirtySegs >= 6 || elapsed >= 10000){
     tts.flushSave();
   } else if (!tts.saveTimer){
     // 设个兜底定时器，时间到就写；后面再 mark 会被它清掉重设
@@ -1255,8 +1290,31 @@ function ttsFlushSaveNow(){
 tts.flushSave = ttsFlushSaveNow;
 tts.markProgress = ttsMarkProgress;
 
-/* 串下一段：当前段 onend → 派下一段；直到末尾就停。 */
-function ttsSpeakSeg(idx){
+/* 浏览器对长 utterance 的处理不一致；按句拆开，没标点时最多 120 字。
+ * 返回的 start/end 仍是原文 UTF-16 偏移，续读和屏幕跟随共用它。 */
+function ttsNextChunk(text, local){
+  let start = Math.max(0, local || 0);
+  while (start < text.length && /\s/.test(text.charAt(start))) start++;
+  if (start >= text.length) return null;
+  const max = (ttsMode === "backend") ? 600 : 120;
+  const limit = Math.min(text.length, start + max);
+  let end = limit, weak = 0;
+  for (let i = start; i < limit; i++){
+    const ch = text.charAt(i);
+    if (/[。！？；：…!?;:]/.test(ch)){
+      end = i + 1;
+      while (end < text.length && /["'”’」』）)】》]/.test(text.charAt(end))) end++;
+      break;
+    }
+    if (i > start + max / 2 && /[，、,\s]/.test(ch)) weak = i + 1;
+  }
+  if (end === limit && weak && limit < text.length) end = weak;
+  if (end < text.length && /[\uD800-\uDBFF]/.test(text.charAt(end - 1)) && /[\uDC00-\uDFFF]/.test(text.charAt(end))) end++;
+  return { start, end, text: text.slice(start, end) };
+}
+
+/* 当前小段 onend → 同一正文段的下一句；段末再接下一段。 */
+function ttsSpeakSeg(idx, fromLocal){
   if (!state.book || idx >= state.segs.length){ ttsStopInternal(true); return; }
   ensureRendered(idx + 1);
   const seg = state.segs[idx];
@@ -1266,15 +1324,26 @@ function ttsSpeakSeg(idx){
     ttsSpeakSeg(idx + 1);
     return;
   }
+  const chunk = ttsNextChunk(seg.text, fromLocal);
+  if (!chunk){ ttsSpeakSeg(idx + 1, 0); return; }
   tts.queueIdx = idx;
   ttsMarkActiveSeg(idx);
-  ttsScrollToActive(idx);
-  ttsMarkProgress(idx);             // 写 tts_offset（节流内）
+  ttsScrollToActive(idx, chunk.start);
+  ttsMarkProgress(idx, chunk.start); // 写 tts_offset（节流内）
   const myGen = tts.gen;            // 记住这一代的编号
-  ttsEngine.speak(seg.text, { rate: tts.rate, voice: tts.voice === "default" ? null : tts.voice }, () => {
+  ttsEngine.speak(chunk.text, { rate: tts.rate, voice: tts.voice === "default" ? null : tts.voice }, () => {
     if (myGen !== tts.gen) return;  // 过期回调（换音色/重开之前留下的）——直接丢掉
-    // onend：若状态没变成 idle/stopped（用户没停/没暂停）就念下一段
-    if (tts.state === "playing") ttsSpeakSeg(idx + 1);
+    // 离开浏览器的 end 回调后再交下一句，避免手机合成器还未释放上一句。
+    setTimeout(() => {
+      if (myGen !== tts.gen) return;
+      const next = (chunk.end < seg.text.length) ? {idx, local: chunk.end} : {idx: idx + 1, local: 0};
+      if (tts.state === "paused"){ tts.pendingNext = next; return; }
+      if (tts.state === "playing") ttsSpeakSeg(next.idx, next.local);
+    }, 0);
+  }, reason => {
+    if (myGen !== tts.gen) return;
+    ttsStopInternal(true);
+    showErr("浏览器朗读中断（" + reason + "），请再点朗读重试。");
   });
 }
 
@@ -1321,17 +1390,18 @@ function ttsStart(fromOffset){
   // （手机 WebView 不给非手势的 play()，不换的话整本都播不出来。）
   if (ttsEngine.unlock) ttsEngine.unlock();
   // 决定从哪一段开始：fromOffset 显式指定优先；其次 state.ttsOffset（=上次念到哪）；再次当前可见段
-  let startOff = (typeof fromOffset === "number" && fromOffset > 0) ? fromOffset : (state.ttsOffset || 0);
+  let startOff = (typeof fromOffset === "number" && fromOffset >= 0) ? fromOffset : (state.ttsOffset || 0);
   if (!startOff){
     const cur = state.els[state.currentSeg];
     startOff = cur ? (state.segs[state.currentSeg] && state.segs[state.currentSeg].start) || 0 : 0;
   }
   const startIdx = segIndexAtOffset(startOff);
   tts.state = "playing";
+  tts.pendingNext = null;
   tts.dirtySegs = 0;
   tts.lastSaveAt = Date.now();
   ttsUpdateUi();
-  ttsSpeakSeg(startIdx);
+  ttsSpeakSeg(startIdx, Math.max(0, startOff - state.segs[startIdx].start));
 }
 
 function ttsPause(){
@@ -1346,6 +1416,11 @@ function ttsResume(){
   ttsEngine.resume();
   tts.state = "playing";
   ttsUpdateUi();
+  if (tts.pendingNext){
+    const next = tts.pendingNext;
+    tts.pendingNext = null;
+    ttsSpeakSeg(next.idx, next.local);
+  }
 }
 
 function ttsStopInternal(silent){
@@ -1353,6 +1428,7 @@ function ttsStopInternal(silent){
   tts.gen++;              // 作废所有在途回调，免得它们把状态推到下一段
   ttsEngine.stop();
   tts.state = "idle";
+  tts.pendingNext = null;
   // 清视觉标记
   for (const el of state.els){
     if (el && el.dataset && el.dataset.ttsActive === "1") delete el.dataset.ttsActive;
