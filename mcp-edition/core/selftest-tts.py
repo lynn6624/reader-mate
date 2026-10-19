@@ -20,16 +20,23 @@ BOOK = "第一章\n" + "".join(SENTENCES) + "\n末尾还有下一段内容。"
 MOCK_SPEECH = """() => {
   const utterances = [];
   const synth = {
-    speaking: false, pending: false, paused: false,
+    speaking: false, pending: false, paused: false, acceptNext: false,
     getVoices: () => [],
-    speak(u) { utterances.push(u); this.speaking = true; u.onstart?.(); },
+    speak(u) {
+      if (utterances.length && !this.acceptNext) { u.onerror?.({error: 'not-allowed'}); return; }
+      utterances.push(u); this.speaking = true; u.onstart?.();
+    },
     pause() { this.paused = true; },
     resume() { this.paused = false; },
     cancel() { this.speaking = false; this.paused = false; },
   };
   window.__spoken = utterances;
-  window.__finish = () => { synth.speaking = false; utterances.at(-1).onend?.(); };
-  window.__finishWithoutEnd = () => { synth.speaking = false; };
+  window.__finish = () => {
+    const u = utterances.at(-1);
+    synth.speaking = false; synth.acceptNext = true;
+    u.onend?.();
+    synth.acceptNext = false;
+  };
   window.__synth = synth;
   window.SpeechSynthesisUtterance = class { constructor(text) { this.text = text; } };
   Object.defineProperty(window, 'speechSynthesis', {configurable: true, value: synth});
@@ -94,8 +101,12 @@ with tempfile.TemporaryDirectory() as directory:
                 })""")
                 assert first["text"] == SENTENCES[1], first
                 assert first["offset"] == first["start"] + len(SENTENCES[0]), first
-                # Omit end on the first sentence: the mobile idle fallback should continue.
-                page.evaluate("__finishWithoutEnd()")
+                # A mobile browser can report speaking=false while still speaking.
+                # This must never cut the sentence short or advance without end.
+                page.evaluate("__synth.speaking = false")
+                page.wait_for_timeout(1300)
+                assert page.evaluate("window.__spoken.length") == 1
+                page.evaluate("__finish()")
                 page.wait_for_function("window.__spoken.length === 2", timeout=3000)
                 assert page.evaluate("__spoken[1].text") == SENTENCES[2]
                 max_scroll = 0
@@ -111,7 +122,7 @@ with tempfile.TemporaryDirectory() as directory:
                 context.close()
             finally:
                 browser.close()
-        print("PASS: mobile selection starts at sentence, continues after missing end, follows within paragraph")
+        print("PASS: mobile selection starts at sentence, waits for end, queues next sentence synchronously, follows within paragraph")
     finally:
         process.terminate()
         process.wait(timeout=10)
