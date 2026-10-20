@@ -84,7 +84,16 @@ def main():
                 assert full_page.status_code == 200 and 'href="/kindle"' in full_page.text
                 assert 'href="/kindle"' not in client.get(url + "/?full=1", headers=owner).text
                 shelf = client.get(url + "/kindle", headers=device)
-                assert shelf.status_code == 200 and "book" in shelf.text
+                assert shelf.status_code == 200 and shelf.text.count('class=shelf-title') == 5
+                assert 'class=book href=' not in shelf.text
+                assert client.post(url + '/api/books/category', headers=owner,
+                    json={'name':'book.txt', 'category':'literature'}).status_code == 200
+                assert client.post(url + '/api/books/category', headers=device,
+                    json={'name':'book.txt', 'category':'nonfiction'}).status_code == 403
+                opened = client.get(url + '/kindle?open=literature&open=science-tools', headers=device)
+                assert 'class=book href=' in opened.text and '暂无书籍' in opened.text, (opened.status_code, opened.text[-3000:])
+                found = client.get(url + '/kindle?q=book', headers=device)
+                assert found.text.count('class=shelf-title') == 1 and 'class=book href=' in found.text
                 reading = client.get(url + "/kindle?name=book.txt", headers=device)
                 pct = 100 * saved_offset / (len(text.encode("utf-16-le")) // 2)
                 assert reading.status_code == 200 and f"{pct:.1f}%" in reading.text

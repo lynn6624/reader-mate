@@ -14,6 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from reader_server import assign_book_category
 
 
 ROOT = pathlib.Path(__file__).parent
@@ -37,6 +38,12 @@ def make_epub():
 
 
 def main():
+    metadata = {}
+    assert assign_book_category(metadata, "literature", source="auto")
+    assert assign_book_category(metadata, "nonfiction", author="user")
+    manual = dict(metadata)
+    assert not assign_book_category(metadata, "web-fiction", source="auto")
+    assert metadata == manual
     with tempfile.TemporaryDirectory() as temp:
         base = pathlib.Path(temp)
         shutil.copy(ROOT / "reader_server.py", base)
@@ -66,8 +73,12 @@ def main():
             except urllib.error.HTTPError as error:
                 return error.code, json.load(error)
 
-        def upload(name, raw, token="test-owner"):
-            return call("/api/import?name=" + urllib.parse.quote(name), token, raw)
+        def upload(name, raw, token="test-owner", category=None):
+            suffix = "" if category is None else "&category=" + urllib.parse.quote(category)
+            return call("/api/import?name=" + urllib.parse.quote(name) + suffix, token, raw)
+
+        def categorize(name, category, token="test-owner"):
+            return call("/api/books/category", token, json.dumps({"name":name, "category":category}).encode())
 
         try:
             for _ in range(100):
@@ -86,6 +97,53 @@ def main():
             assert (base / "书库" / "a.txt").read_text(encoding="utf-8") == "hello"
             assert upload("reader.txt", b"forbidden", "test-reader")[0] == 403
             assert upload("anon.txt", b"forbidden", "")[0] == 401
+            assert call("/api/books")[1]["books"][0]["category"] == "uncategorized"
+            assert upload("bad-category.txt", b"hello", category="invented")[0] == 400
+            assert upload("blank-category.txt", b"hello", category="")[0] == 400
+            assert upload("novel.txt", b"hello", category="literature")[0] == 200
+            assert upload("manual.txt", b"hello", category="web-fiction")[0] == 200
+            assert categorize("a.txt", "nonfiction", "test-reader")[0] == 403
+            assert categorize("a.txt", "nonfiction", "")[0] == 401
+            assert categorize("a.txt", "bad")[0] == 400
+            assert categorize("a.txt", {"bad":True})[0] == 400
+            assert categorize("missing.txt", "nonfiction")[0] == 404
+            assert categorize("a.txt", "nonfiction")[0] == 200
+            listing = call("/api/books")[1]
+            assert listing["can_manage"] and len(listing["categories"]) == 5
+            assert not call("/api/books", "test-reader")[1]["can_manage"]
+            by_name = {book["name"]:book for book in listing["books"]}
+            assert by_name["a.txt"]["category_source"] == "manual"
+            assert sum(c["count"] for c in listing["categories"]) == len(listing["books"])
+            filtered = call("/api/books?category=literature")[1]
+            assert [book["name"] for book in filtered["books"]] == ["novel.txt"]
+            assert call("/api/books?category=unknown")[0] == 400
+            # Category edits must preserve the physical file, highlights, and progress.
+            book = call("/api/book?name=a.txt")[1]
+            assert call("/api/progress", body=json.dumps({"name":"a.txt", "offset":2,
+                "expected_revision":0, "book_revision":book["book_revision"]}).encode())[0] == 200
+            assert call("/api/notes/highlight", body=json.dumps({"name":"a.txt", "start":0,
+                "end":2, "text":"he"}).encode())[0] == 200
+            before = {file:(base / file).read_bytes() for file in
+                      ("书库/a.txt", "data/progress.json", "data/notes.json")}
+            assert categorize("a.txt", "science-tools")[0] == 200
+            for file, raw in before.items():
+                assert (base / file).read_bytes() == raw
+            # A direct filesystem import defaults to pending; re-scan retains metadata.
+            external = base / "书库/external.txt"
+            external.write_text("external", encoding="utf-8")
+            assert next(b for b in call("/api/books")[1]["books"] if b["name"] == external.name)["category"] == "uncategorized"
+            assert categorize(external.name, "nonfiction")[0] == 200
+            external.write_text("external changed", encoding="utf-8")
+            scanned = next(b for b in call("/api/books")[1]["books"] if b["name"] == external.name)
+            assert scanned["category"] == "nonfiction" and scanned["category_source"] == "manual"
+            # Force metadata write failure in the disposable directory: no new file/record survives.
+            (base / "data/library.json.tmp").mkdir()
+            assert upload("write-fails.txt", b"hello", category="literature")[0] == 500
+            (base / "data/library.json.tmp").rmdir()
+            assert not (base / "书库/write-fails.txt").exists()
+            metadata = json.loads((base / "data/library.json").read_text(encoding="utf-8"))
+            assert "write-fails.txt" not in metadata["books"]
+            assert "bad-category.txt" not in metadata["books"]
 
             gbk = "第一章\n旧书正文。".encode("gb18030")
             status, result = upload("老书.txt", gbk)
@@ -108,7 +166,7 @@ def main():
                 for number in range(4097):
                     zf.writestr("part-%04d" % number, "")
             assert upload("太多文件.epub", archive.getvalue())[0] == 400
-            print("PASS: TXT encoding, EPUB conversion, duplicate protection, invalid content and owner-only access")
+            print("PASS: TXT/EPUB uploads, required/legacy categories, filters, owner-only edits, metadata failure rollback, progress/notes preservation")
         finally:
             proc.terminate()
             try:

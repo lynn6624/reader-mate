@@ -153,6 +153,25 @@
   .book .del:hover{color:#c0392b}
   .book .bar{height:3px; border-radius:3px; background:var(--line); margin-top:7px; overflow:hidden}
   .book .bar i{display:block; height:100%; background:var(--accent)}
+  .shelf-group{margin:0 0 10px;border:1px solid var(--line);border-radius:10px}
+  .shelf-group summary{display:flex;align-items:center;gap:8px;min-height:48px;padding:10px 12px;cursor:pointer;list-style:none}
+  .shelf-group summary::-webkit-details-marker{display:none}
+  .shelf-group summary:before{content:"▸";color:var(--accent)}
+  .shelf-group[open] summary:before{content:"▾"}
+  .shelf-group summary b{flex:1;font-size:14px}
+  .shelf-group summary span{font-size:12px;color:var(--dim)}
+  .shelf-books{padding:0 10px 4px}
+  .shelf-group:not([open])>.shelf-books{display:none}
+  .book-category{display:flex;gap:6px;align-items:center;margin-top:9px;font-size:12px;color:var(--dim)}
+  .book-category select{min-height:36px;max-width:100%;font:inherit;padding:5px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--fg)}
+  #importTrigger[hidden],#uploadDialog[hidden]{display:none}
+  #uploadDialog{position:fixed;inset:0;z-index:85;background:rgba(40,32,24,.4);display:flex;align-items:center;justify-content:center;padding:14px;font-family:system-ui,"Microsoft YaHei",sans-serif}
+  #uploadForm{width:min(520px,100%);max-height:88vh;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:18px;background:var(--card);color:var(--fg)}
+  #uploadForm h2{font-size:18px;margin:0 0 12px}
+  #uploadForm label{display:block;font-size:13px;margin:12px 0}
+  #uploadForm select{width:100%;min-height:44px;margin-top:5px;border:1px solid var(--line);border-radius:7px;padding:7px;font:inherit;background:var(--bg);color:var(--fg)}
+  #uploadRows label{border-top:1px solid var(--line);padding-top:10px;overflow-wrap:anywhere}
+  #uploadActions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
 
   #q{
     width:100%; padding:9px 11px; font-size:14px; border-radius:9px;
@@ -504,7 +523,7 @@
 <aside id="libPanel">
   <header>
     <b>书库</b>
-    <label class="btn primary" title="支持 TXT、EPUB；TXT 自动识别编码">＋ 导入书籍<input type="file" id="fileInput" multiple accept=".txt,.epub,text/plain,application/epub+zip" hidden></label>
+    <label class="btn primary" id="importTrigger" hidden title="支持 TXT、EPUB；TXT 自动识别编码">＋ 导入书籍<input type="file" id="fileInput" multiple accept=".txt,.epub,text/plain,application/epub+zip" hidden></label>
     <button class="ibtn" id="btnReload" title="重新扫描书库">↻</button>
     <div id="libTabs">
       <button class="t on" data-tab="lib">书库</button>
@@ -534,6 +553,17 @@
     <!-- KINDLE_EXTENSION_PANEL -->
   </div>
 </aside>
+
+<div id="uploadDialog" hidden role="dialog" aria-modal="true" aria-labelledby="uploadTitle">
+  <form id="uploadForm">
+    <h2 id="uploadTitle">导入书籍</h2>
+    <p class="hint">请先选择所属分类。批量文件可统一设置，也可逐本调整。</p>
+    <label>统一设置分类<select id="uploadCategory" aria-label="统一设置分类"></select></label>
+    <div id="uploadRows"></div>
+    <p class="hint" id="uploadStatus" aria-live="polite"></p>
+    <div id="uploadActions"><button type="button" class="btn" id="uploadCancel">取消</button><button type="submit" class="btn primary" id="uploadSubmit" disabled>确认导入</button></div>
+  </form>
+</div>
 
 <aside id="searchPanel">
   <header>
@@ -1571,8 +1601,25 @@ function pickDefaultBookName(books, whoProgress){
   return books.length ? books[0].name : "";
 }
 
+const SHELF_OPEN_KEY = "rm_shelf_open_v1";
+let shelfExpanded = new Set();
+try {
+  const saved = JSON.parse(localStorage.getItem(SHELF_OPEN_KEY) || "[]");
+  if (Array.isArray(saved)) shelfExpanded = new Set(saved.filter(x => typeof x === "string"));
+} catch (e) {}
+let libraryCategories = [];
+let canManageLibrary = false;
+function libraryQuery(){
+  return ($("#libQuery").value || "").trim().normalize("NFKC").toLocaleLowerCase();
+}
+function categoryOptions(selected, placeholder){
+  return (placeholder ? '<option value="">请选择所属分类</option>' : "") +
+    libraryCategories.map(c => '<option value="' + esc(c.id) + '"' +
+      (c.id === selected ? ' selected' : '') + '>' + esc(c.name) + '</option>').join("");
+}
+function validCategory(value){ return libraryCategories.some(c => c.id === value); }
 function applyLibrarySearch(){
-  const query = ($("#libQuery").value || "").trim().normalize("NFKC").toLocaleLowerCase();
+  const query = libraryQuery();
   const cards = [...$("#libList").querySelectorAll(".book")];
   let shown = 0;
   for (const card of cards){
@@ -1580,10 +1627,15 @@ function applyLibrarySearch(){
     card.style.display = match ? "" : "none";
     if (match) shown++;
   }
+  for (const group of $("#libList").querySelectorAll(".shelf-group")){
+    const matches = [...group.querySelectorAll(".book")].filter(card => card.style.display !== "none").length;
+    group.hidden = !!query && !matches;
+    group.open = query ? matches > 0 : shelfExpanded.has(group.dataset.category);
+  }
   const count = $("#libCount");
   if (count) count.textContent = query ? (shown + " / " + cards.length + " 本") : (cards.length + " 本");
   let empty = $("#libSearchEmpty");
-  if (query && cards.length && !shown){
+  if (query && !shown){
     if (!empty){
       empty = document.createElement("div");
       empty.id = "libSearchEmpty";
@@ -1600,6 +1652,10 @@ async function loadBooks(whoProgress){
   whoProgress = whoProgress || {};
   const r = await fetchAuth("/api/books");
   const j = await r.json();
+  if (!r.ok || !j.ok) throw new Error(j.error || "书库读取失败");
+  libraryCategories = j.categories || [];
+  canManageLibrary = !!j.can_manage;
+  $("#importTrigger").hidden = !canManageLibrary;
   state.booksDir = j.dir || "";
   // 把该身份的进度叠到每本书上（覆盖后端的 user 兜底）
   const books = (j.books || []).map(b => {
@@ -1615,13 +1671,26 @@ async function loadBooks(whoProgress){
     return b;
   });
   const list = $("#libList");
-  if (!books.length){
-    list.innerHTML = '<div class="hint">书库还是空的。<br>点上面的「＋ 导入书籍」，或者把 TXT / EPUB 文件拖进这个窗口。</div>';
-    applyLibrarySearch();
-    renderLibFooter();
-    return books;
-  }
   list.innerHTML = "";
+  const shelves = new Map();
+  for (const category of libraryCategories){
+    const group = document.createElement("details");
+    group.className = "shelf-group";
+    group.dataset.category = category.id;
+    const count = books.filter(b => b.category === category.id).length;
+    group.innerHTML = '<summary><b>' + esc(category.name) + '</b><span>' + count +
+      ' 本</span></summary><div class="shelf-books"></div>';
+    group.querySelector("summary").addEventListener("click", e => {
+      e.preventDefault();
+      group.open = !group.open;
+      if (!libraryQuery()){
+        if (group.open) shelfExpanded.add(category.id); else shelfExpanded.delete(category.id);
+        try { localStorage.setItem(SHELF_OPEN_KEY, JSON.stringify([...shelfExpanded])); } catch (e) {}
+      }
+    });
+    list.appendChild(group);
+    shelves.set(category.id, group.querySelector(".shelf-books"));
+  }
   for (const b of books){
     const d = document.createElement("div");
     d.className = "book";
@@ -1632,23 +1701,43 @@ async function loadBooks(whoProgress){
       '<div class="m">' + (b.chars || 0).toLocaleString() + ' 字　' +
         (b.read_at ? '读到 ' + pctv + '%　' + esc(b.chapter || '') : '还没开读') + '</div>' +
       '<div class="bar"><i style="width:' + pctv + '%"></i></div>' +
-      '<button class="del" title="从书库删掉">×</button>';
+      (canManageLibrary && !b.read_only ? '<button class="del" title="从书库删掉">×</button>' : '') +
+      (canManageLibrary ? '<label class="book-category">所属分类<select aria-label="调整《' + esc(b.title) +
+        '》的分类">' + categoryOptions(b.category, false) + '</select></label>' : '');
     d.addEventListener("click", e => {
-      if (e.target.classList.contains("del")) return;
+      if (e.target.closest("button,select,label,option")) return;
       openBook(b.name);
     });
-    d.querySelector(".del").addEventListener("click", async e => {
+    const del = d.querySelector(".del");
+    if (del) del.addEventListener("click", async e => {
       e.stopPropagation();
       if (!confirm("把《" + b.title + "》从书库删掉？（连带阅读进度）")) return;
       const rr = await fetchAuth("/api/delete?name=" + encodeURIComponent(b.name), { method: "POST" });
       const jj = await rr.json();
       toast(jj.ok ? "已删除" : (jj.error || "删除失败"));
-      if (state.book && state.book.name === b.name){ state.book = null; showEmpty(); }
+      if (jj.ok && state.book && state.book.name === b.name){ state.book = null; showEmpty(); }
       // 切回 user 兜底刷新（删避免连带这个身份的进度）
       const wp = await fetchWhoProgress();
       loadBooks(wp);
     });
-    list.appendChild(d);
+    const categorySelect = d.querySelector(".book-category select");
+    if (categorySelect) categorySelect.addEventListener("change", async () => {
+      if (!validCategory(categorySelect.value)) return;
+      categorySelect.disabled = true;
+      try {
+        const response = await fetchAuth("/api/books/category", {method:"POST",
+          headers:{"Content-Type":"application/json"}, body:JSON.stringify({name:b.name, category:categorySelect.value})});
+        const result = await response.json();
+        if (!response.ok || !result.ok) throw new Error(result.error || "分类保存失败");
+        await loadBooks(await fetchWhoProgress());
+        toast("分类已保存");
+      } catch (e){ categorySelect.value = b.category; toast(e.message || "分类保存失败"); }
+      finally { categorySelect.disabled = false; }
+    });
+    (shelves.get(b.category) || shelves.get("uncategorized") || list).appendChild(d);
+  }
+  for (const body of shelves.values()){
+    if (!body.childElementCount) body.innerHTML = '<div class="hint">暂无书籍</div>';
   }
   applyLibrarySearch();
   renderLibFooter();   // 顺带刷新底部身份显示
@@ -1830,24 +1919,72 @@ function closePanels(){
 }
 
 /* ---------------- 导入 ---------------- */
+let pendingUploads = [];
+let uploadBusy = false;
+function validateUploadChoices(){
+  const selects = [...$("#uploadRows").querySelectorAll("select")];
+  $("#uploadSubmit").disabled = uploadBusy || !selects.length || selects.some(s => !validCategory(s.value));
+}
 async function importFiles(files){
+  if (!canManageLibrary){ toast("导入书籍仅限主人"); return; }
+  if (uploadBusy || !$("#uploadDialog").hidden){ toast("请先完成当前导入"); return; }
   const arr = [...files];
   if (!arr.length) return;
+  pendingUploads = arr;
+  $("#uploadCategory").innerHTML = categoryOptions("", true);
+  $("#uploadRows").innerHTML = arr.map((f, i) => '<label>' + esc(f.name) +
+    '<select required data-upload-index="' + i + '" aria-label="' + esc(f.name) + ' 的所属分类">' +
+    categoryOptions("", true) + '</select></label>').join("");
+  $("#uploadStatus").textContent = arr.length + " 本待导入；每本都需要选择分类。";
+  $("#uploadDialog").hidden = false;
+  validateUploadChoices();
+  $("#uploadCategory").focus();
+}
+$("#uploadCategory").addEventListener("change", e => {
+  if (validCategory(e.target.value)){
+    $("#uploadRows").querySelectorAll("select").forEach(s => { s.value = e.target.value; });
+  }
+  validateUploadChoices();
+});
+$("#uploadRows").addEventListener("change", validateUploadChoices);
+$("#uploadCancel").addEventListener("click", () => {
+  if (uploadBusy) return;
+  pendingUploads = [];
+  $("#uploadDialog").hidden = true;
+  $("#fileInput").value = "";
+});
+$("#uploadForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  if (uploadBusy || !canManageLibrary) return;
+  const choices = [...$("#uploadRows").querySelectorAll("select")].map(s => s.value);
+  if (!pendingUploads.length || choices.length !== pendingUploads.length || choices.some(c => !validCategory(c))){
+    $("#uploadStatus").textContent = "请为每本书选择有效的所属分类。";
+    validateUploadChoices(); return;
+  }
+  uploadBusy = true;
+  $("#uploadForm").querySelectorAll("button,select").forEach(el => { el.disabled = true; });
   let ok = 0;
   const failed = [];
-  for (const f of arr){
-    toast("识别并导入 " + f.name + " …", 6000);
+  for (const [index, f] of pendingUploads.entries()){
+    $("#uploadStatus").textContent = "识别并导入 " + (index + 1) + " / " + pendingUploads.length + "：" + f.name;
     try {
-      const r = await fetchAuth("/api/import?name=" + encodeURIComponent(f.name), { method: "POST", body: f });
+      const r = await fetchAuth("/api/import?name=" + encodeURIComponent(f.name) +
+        "&category=" + encodeURIComponent(choices[index]), { method: "POST", body: f });
       const j = await r.json();
       if (j.ok) ok++; else failed.push(f.name + "：" + (j.error || "导入失败"));
     } catch (e){ failed.push(f.name + "：连接后端失败"); }
   }
-  toast("导入 " + ok + " / " + arr.length + " 本" +
+  toast("导入 " + ok + " / " + pendingUploads.length + " 本" +
         (failed.length ? "；失败：" + failed[0] + (failed.length > 1 ? " 等 " + failed.length + " 本" : "") : ""), 7000);
-  const books = await loadBooks();
-  if (!state.book && books.length) openBook(books[0].name);
-}
+  pendingUploads = [];
+  uploadBusy = false;
+  $("#uploadForm").querySelectorAll("button,select").forEach(el => { el.disabled = false; });
+  $("#uploadDialog").hidden = true;
+  try {
+    const books = await loadBooks(await fetchWhoProgress());
+    if (!state.book && books.length) openBook(books[0].name);
+  } catch (e){ toast("导入已结束，书库暂未刷新，请稍后重试。", 6000); }
+});
 
 /* ---------------- 事件 ---------------- */
 $("#btnLib").addEventListener("click", openLib);

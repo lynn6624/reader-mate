@@ -7,6 +7,7 @@ import stat
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Literal
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
@@ -100,9 +101,13 @@ async def get_calling_guide(ctx: Context) -> dict:
         return {"name": reader.REFERENCE_BOOK_NAME, "text": stream.read()}
 
 @mcp.tool()
-async def list_books(ctx: Context) -> dict:
-    """List the shared TXT bookshelf. Call get_calling_guide first if the workflow is unfamiliar."""
-    return await api(ctx, "/api/books")
+async def list_books(ctx: Context, category: Literal["", "literature", "web-fiction", "nonfiction",
+                                                    "science-tools", "uncategorized"] = "") -> dict:
+    """List shared books and five categories/counts. Omit category for all; pass a returned category ID to filter.
+
+    Call get_calling_guide first if the workflow is unfamiliar. Category IDs never change book names/positions.
+    """
+    return await api(ctx, "/api/books?" + urllib.parse.urlencode({"category": category}))
 
 @mcp.tool()
 async def read_book(name: str, ctx: Context, offset: int = 0, length: int = 3000) -> dict:

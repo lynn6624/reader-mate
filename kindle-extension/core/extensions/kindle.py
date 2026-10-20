@@ -15,8 +15,8 @@ from html import escape as html_escape
 from http.cookies import SimpleCookie
 
 from reader_server import (
-    BOOKS_DIR, CLOUD, DATA_DIR, PORT, _lock, book_path, file_revision,
-    load_progress, progress_view, read_text, resolve_who, safe_name,
+    BOOKS_DIR, BOOK_CATEGORIES, CATEGORY_IDS, CLOUD, DATA_DIR, PORT, _lock, book_path, file_revision,
+    load_progress, progress_view, read_text, resolve_who, safe_name, scan_books,
 )
 
 KINDLE_AUTH_FILE = os.path.join(DATA_DIR, "kindle_auth.json")
@@ -347,6 +347,7 @@ class KindleMixin:
                 ".sync-note form{display:inline;margin:0 0 0 5px}"
                 ".sync-note button{padding:4px 7px}"
                 ".book{display:block;padding:9px 2px;border-bottom:1px solid #cfc3b1}"
+                ".shelf-title{display:block;padding:14px 3px;border-bottom:2px solid #8a7964;text-decoration:none}"
                 "input{font:inherit;width:68%;padding:6px}button{font:inherit}"
                 "</style></head><body><h1>" + html_escape(title) + "</h1>" + content +
                 "</body></html>").encode("utf-8")
@@ -403,30 +404,54 @@ class KindleMixin:
         raw_name = (q.get("name") or [""])[0]
         if not raw_name:
             search = (q.get("q") or [""])[0].strip()[:60]
-            try:
-                page = max(0, min(1000, int((q.get("page") or ["0"])[0])))
-            except ValueError:
-                page = 0
             pr = load_progress().get("books") or {}
-            names = [n for n in os.listdir(BOOKS_DIR) if n.lower().endswith(".txt")
-                     and os.path.isfile(book_path(n)) and (not search or search.lower() in n.lower())]
+            books = scan_books()
+            names = [n for n in books if not search or search.casefold() in n.casefold()]
             names.sort(key=lambda n: ((pr.get(n) or {}).get("user") or {}).get("updated") or "", reverse=True)
-            selected = names[page * 8:(page + 1) * 8]
+            expanded = set(q.get("open") or []) & CATEGORY_IDS
+            closed_search = set(q.get("closed") or []) & CATEGORY_IDS
+
+            def shelf_url(opened, **updates):
+                params = {key: values for key, values in q.items() if key.startswith("page_")}
+                params.update(q=search, open=sorted(opened), closed=sorted(closed_search))
+                params.update(updates)
+                return "/kindle?" + html_escape(urllib.parse.urlencode(params, doseq=True), quote=True)
+
             content = ("<p class=meta>触屏点按书名阅读；打开时接续 002 已保存的位置。</p>"
                        "<form method=get action='/kindle'><input name=q value='" +
                        html_escape(search, quote=True) + "' placeholder='搜索书名'>"
                        "<button type=submit>查找</button></form>")
-            for name in selected:
-                prog = ((pr.get(name) or {}).get("user") or {})
-                pct = prog.get("percent")
-                label = os.path.splitext(name)[0]
-                if isinstance(pct, (int, float)):
-                    label += " · %.1f%%" % (pct * 100)
-                content += "<a class=book href='" + html_escape(self._kindle_book_url(name), quote=True) + "'>" + html_escape(label) + "</a>"
-            if not selected:
+            for category, label in BOOK_CATEGORIES:
+                group = [n for n in names if books[n]["category"] == category]
+                if search and not group:
+                    continue
+                opened = category not in closed_search if search else category in expanded
+                heading = ("▾ " if opened else "▸ ") + label + "（" + str(len(group)) + "）"
+                toggled = expanded ^ {category}
+                toggle_url = shelf_url(toggled, closed=sorted(closed_search ^ {category})) if search else shelf_url(toggled)
+                content += "<a class=shelf-title href='" + toggle_url + "'>" + html_escape(heading) + "</a>"
+                if not opened:
+                    continue
+                try:
+                    page = max(0, int((q.get("page_" + category) or ["0"])[0]))
+                except ValueError:
+                    page = 0
+                page = min(page, max(0, (len(group) - 1) // 8))
+                for name in group[page * 8:(page + 1) * 8]:
+                    prog = ((pr.get(name) or {}).get("user") or {})
+                    pct = prog.get("percent")
+                    title = books[name]["title"]
+                    if isinstance(pct, (int, float)):
+                        title += " · %.1f%%" % (pct * 100)
+                    content += "<a class=book href='" + html_escape(self._kindle_book_url(name), quote=True) + "'>" + html_escape(title) + "</a>"
+                if not group:
+                    content += "<p>暂无书籍</p>"
+                if page:
+                    content += "<a href='" + shelf_url(expanded, **{"page_" + category: page - 1}) + "'>← 上一批书籍</a> "
+                if (page + 1) * 8 < len(group):
+                    content += "<a href='" + shelf_url(expanded, **{"page_" + category: page + 1}) + "'>下一批书籍 →</a>"
+            if search and not names:
                 content += "<p>没有找到书籍。</p>"
-            if (page + 1) * 8 < len(names):
-                content += "<p><a href='/kindle?" + html_escape(urllib.parse.urlencode({"q": search, "page": page + 1}), quote=True) + "'>下一批书籍 →</a></p>"
             return self._kindle_html("书库", content)
         name = safe_name(raw_name)
         if name != raw_name or not os.path.isfile(book_path(name)):

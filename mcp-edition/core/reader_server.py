@@ -36,6 +36,15 @@ from http.cookies import SimpleCookie
 BASE = os.path.dirname(os.path.abspath(__file__))
 BOOKS_DIR = os.path.join(BASE, "书库")
 REFERENCE_BOOK_NAME = "MCP工具标准调用参考_只读.txt"
+BOOK_CATEGORIES = (
+    ("literature", "文学小说"),
+    ("web-fiction", "网络文学"),
+    ("nonfiction", "随笔与非虚构"),
+    ("science-tools", "科普与工具"),
+    ("uncategorized", "待分类"),
+)
+CATEGORY_IDS = frozenset(key for key, _ in BOOK_CATEGORIES)
+DEFAULT_CATEGORY = "uncategorized"
 DATA_DIR = os.path.join(BASE, "data")
 HTML_FILE = os.path.join(BASE, "web", "reader.html")
 PROGRESS_FILE = os.path.join(DATA_DIR, "progress.json")
@@ -477,7 +486,44 @@ def load_library() -> dict:
     lib.setdefault("version", 1)
     lib.setdefault("updated", now_iso())
     lib.setdefault("books", {})
+    if not isinstance(lib["books"], dict):
+        lib["books"] = {}
     return lib
+
+
+def book_category(entry):
+    category = entry.get("category")
+    return category if isinstance(category, str) and category in CATEGORY_IDS else DEFAULT_CATEGORY
+
+
+def assign_book_category(entry, category, *, source="manual", author=""):
+    """Shared metadata writer; automatic suggestions never replace a manual choice."""
+    if not isinstance(category, str) or category not in CATEGORY_IDS or source not in ("manual", "auto", "default"):
+        raise ValueError("所属分类无效")
+    if source != "manual" and entry.get("category_source") == "manual":
+        return False
+    entry.update(category=category, category_source=source,
+                 category_updated_at=now_iso(), category_updated_by=author)
+    return True
+
+
+def book_entry(name, previous=None, text=None):
+    """Refresh file statistics while retaining category and other book metadata."""
+    entry = dict(previous) if isinstance(previous, dict) else {}
+    st = os.stat(book_path(name))
+    chars = entry.get("chars")
+    if text is not None:
+        chars = len(text)
+    elif chars is None or entry.get("mtime") != st.st_mtime or entry.get("bytes") != st.st_size:
+        try:
+            chars = len(read_text(book_path(name)))
+        except Exception:
+            chars = 0
+    entry.update(name=name, title=os.path.splitext(name)[0], bytes=st.st_size,
+                 chars=chars or 0, mtime=st.st_mtime,
+                 imported=entry.get("imported") or now_iso(), category=book_category(entry))
+    entry.setdefault("category_source", "default")
+    return entry
 
 
 def load_progress() -> dict:
@@ -850,44 +896,20 @@ def _norm_highlight(h: dict) -> dict:
 
 
 def scan_books() -> dict:
-    """扫书库目录，返回 {name: 条目}，字符数带 mtime/size 缓存。"""
-    lib = load_library()
-    cache = lib.get("books") or {}
-    out = {}
-    if os.path.isdir(BOOKS_DIR):
-        for fn in sorted(os.listdir(BOOKS_DIR)):
-            if not fn.lower().endswith(".txt"):
-                continue
-            p = os.path.join(BOOKS_DIR, fn)
-            if not os.path.isfile(p):
-                continue
-            st = os.stat(p)
-            ent = cache.get(fn) or {}
-            chars = ent.get("chars")
-            if not chars or ent.get("mtime") != st.st_mtime or ent.get("bytes") != st.st_size:
-                try:
-                    chars = len(read_text(p))
-                except Exception:
-                    chars = 0
-                ent = {
-                    "file": fn,
-                    "bytes": st.st_size,
-                    "chars": chars,
-                    "mtime": st.st_mtime,
-                    "imported": ent.get("imported") or now_iso(),
-                }
-            out[fn] = {
-                "name": fn,
-                "title": os.path.splitext(fn)[0],
-                "bytes": st.st_size,
-                "chars": chars or 0,
-                "mtime": st.st_mtime,
-                "imported": ent.get("imported") or now_iso(),
-            }
-    lib["books"] = out
-    lib["updated"] = now_iso()
-    dump_json(LIBRARY_FILE, lib)
-    return out
+    """One shared index; serialize scans with uploads and manual recategorization."""
+    with _lock:
+        lib = load_library()
+        cache = lib["books"]
+        out = {}
+        if os.path.isdir(BOOKS_DIR):
+            for fn in sorted(os.listdir(BOOKS_DIR)):
+                if fn.lower().endswith(".txt") and os.path.isfile(book_path(fn)):
+                    out[fn] = book_entry(fn, cache.get(fn))
+        if out != cache:
+            lib["books"] = out
+            lib["updated"] = now_iso()
+            dump_json(LIBRARY_FILE, lib)
+        return out
 
 
 def write_progress_md(pr: dict, lib: dict):
@@ -989,12 +1011,17 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
     def _err(self, msg, code=400):
+        # Rejected uploads/edits may have an unread body; never treat it as the next request.
+        if self.command == "POST" and self.headers.get("Content-Length", "0") != "0":
+            self.close_connection = True
         self._json({"ok": False, "error": msg}, code)
 
     def _query(self):
@@ -1029,6 +1056,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         """鉴权失败直接返回 401 响应；返回 True 表示已通过或未启用。"""
         if self._token_ok():
             return True
+        if self.command == "POST" and self.headers.get("Content-Length", "0") != "0":
+            self.close_connection = True
         body = json.dumps({"ok": False, "error": "未授权"}, ensure_ascii=False).encode("utf-8")
         try:
             self.send_response(401)
@@ -1036,6 +1065,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("WWW-Authenticate", 'Token realm="reader"')
+            if self.close_connection:
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
         except Exception:
@@ -1226,10 +1257,15 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _api_books(self):
+        category = (self._query().get("category") or [""])[0]
+        if category and category not in CATEGORY_IDS:
+            return self._err("所属分类无效")
         lib = scan_books()
         pr = load_progress()
         books = []
         for name, b in lib.items():
+            if category and b["category"] != category:
+                continue
             # load_progress 已把 books[name] 规范成 {身份: 进度}
             by_who = (pr.get("books") or {}).get(name) or {}
             # 默认兜底取 user 那份；它不存在就取「最近更新的身份」
@@ -1238,6 +1274,7 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                 p = max(by_who.values(), key=lambda x: x.get("updated") or "")
             p = p or {}
             b = dict(b)
+            b["read_only"] = CLOUD and name == REFERENCE_BOOK_NAME
             b["offset"] = p.get("offset", 0)
             b["percent"] = p.get("percent", 0)
             b["chapter"] = p.get("chapter", "")
@@ -1245,8 +1282,14 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             books.append(b)
         books.sort(key=lambda x: (x.get("read_at") or "", x.get("name")))
         books.reverse()
-        return self._json({"ok": True, "books": books, "dir": BOOKS_DIR,
-                           "updated": lib.get("updated")})
+        categories = [{"id": key, "name": label,
+                       "count": sum(b["category"] == key for b in lib.values())}
+                      for key, label in BOOK_CATEGORIES]
+        can_manage = not self._kindle_cookie_only() and (
+            not CLOUD or resolve_who(None, self._who_token()) == "user")
+        return self._json({"ok": True, "books": books, "categories": categories,
+                           "can_manage": can_manage, "total": len(lib), "dir": BOOKS_DIR,
+                           "updated": load_library().get("updated")})
 
     def _api_book(self):
         name = safe_name((self._query().get("name") or [""])[0])
@@ -1374,6 +1417,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                 return self._api_kindle_pairing()
             if path == "/api/import":
                 return self._api_import()
+            if path == "/api/books/category":
+                return self._api_book_category()
             if path == "/api/progress":
                 return self._api_progress()
             if path == "/api/delete":
@@ -1396,6 +1441,11 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         if CLOUD and resolve_who(None, self._who_token()) != "user":
             return self._err("导入仅限主人", 403)
         filename = (self._query().get("name") or [""])[0]
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, keep_blank_values=True)
+        supplied = params.get("category")
+        category = supplied[0] if supplied else DEFAULT_CATEGORY
+        if category not in CATEGORY_IDS or (supplied and len(supplied) != 1):
+            return self._err("请选择有效的所属分类")
         try:
             name, text, source_format, encoding = prepare_import(filename, self._body())
         except ValueError as exc:
@@ -1406,14 +1456,51 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             if os.path.exists(book_path(name)):
                 return self._err("书库已有同名书籍；请改名后再上传，避免覆盖现有阅读记录", 409)
             atomic_write(book_path(name), text)
-            lib = load_library()
-            lib.get("books", {}).pop(name, None)  # 让下次扫描重算字符数
-            dump_json(LIBRARY_FILE, lib)
+            try:
+                lib = load_library()
+                entry = book_entry(name, text=text)
+                assign_book_category(entry, category, source="manual" if supplied else "default",
+                                     author=resolve_who(None, self._who_token()) if CLOUD else "user")
+                lib["books"][name] = entry
+                lib["updated"] = now_iso()
+                dump_json(LIBRARY_FILE, lib)
+            except Exception:
+                os.remove(book_path(name))  # Only this newly created file; never an existing book.
+                raise
         audit(resolve_who(None, self._who_token()), _audit_token_hint(self._who_token()),
               self._client_ip(), "POST /api/import", name)
         return self._json({"ok": True, "name": name, "chars": len(text),
                            "source_format": source_format, "encoding": encoding,
-                           "overwrote": False})
+                           "category": category, "overwrote": False})
+
+    def _api_book_category(self):
+        if self._kindle_cookie_only():
+            return self._err("Kindle 设备不能调整分类", 403)
+        who = resolve_who(None, self._who_token()) if CLOUD else "user"
+        if CLOUD and who != "user":
+            return self._err("调整分类仅限主人", 403)
+        try:
+            data = json.loads(self._body().decode("utf-8"))
+            if not isinstance(data, dict) or data.get("category") not in CATEGORY_IDS:
+                raise ValueError("所属分类无效")
+            raw_name = data.get("name")
+            if not isinstance(raw_name, str) or safe_name(raw_name) != raw_name:
+                raise ValueError("书名无效")
+        except (ValueError, TypeError):
+            return self._err("请提交有效的书名和所属分类")
+        with _lock:
+            if not os.path.isfile(book_path(raw_name)):
+                return self._err("书库里没有这本书", 404)
+            lib = load_library()
+            entry = book_entry(raw_name, lib["books"].get(raw_name))
+            assign_book_category(entry, data["category"], author=who)
+            lib["books"][raw_name] = entry
+            lib["updated"] = now_iso()
+            dump_json(LIBRARY_FILE, lib)
+        audit(who, _audit_token_hint(self._who_token()), self._client_ip(),
+              "POST /api/books/category", raw_name, extra=data["category"])
+        return self._json({"ok": True, "name": raw_name, "category": entry["category"],
+                           "category_source": "manual"})
 
     def _api_delete(self):
         if self._kindle_cookie_only():

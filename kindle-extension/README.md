@@ -2,6 +2,8 @@
 
 此扩展只适用于带 `KINDLE_EXTENSION_*` 页面占位符的同版 ReaderMate MCP 核心。没有 Kindle 的用户不需要安装；基础阅读器、共读与 MCP 都可独立运行。安装后主人 `user` 可以生成一次性配对链接，已配对设备继续使用原来的共享进度。
 
+2026-10-21 分类目录版需要同版核心（含 `BOOK_CATEGORIES` 和分类元数据）。Kindle 书库默认折叠五类，可同时展开多个分类；每组每批最多八本，支持前后翻批和跨组搜索。目录不依赖 JavaScript，设备会话只能浏览分类；管理员在完整阅读页修改分类，沿用同一份 `library.json`，不会移动 TXT 或改变进度。
+
 ## 安装
 
 1. 先部署匹配版本的 `core/reader_server.py` 与 `core/web/reader.html`，备份这两个代码文件。不要覆盖 `core/data/`、`core/书库/` 或 `state/`。

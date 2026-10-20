@@ -35,6 +35,14 @@ sudo -u reader python3 deploy/init-token-bootstrap.py
 
 ## 4. 验收与回滚
 
+### 2026-10-21 书架分类升级
+
+备份 `core/reader_server.py`、`core/mcp_server.py`、`core/web/reader.html`、调用参考 TXT 和 `core/data/library.json`；校验后替换上述代码及代码目录/书库的两份调用参考，按 Web 后 MCP 顺序重启。保留其余数据目录、书籍、令牌与路径钥匙。可选 Kindle 扩展只在原本安装时同步同版扩展；默认发行包不启用 Kindle。
+
+没有独立数据库迁移。首次目录扫描在 `library.json` 的每本记录补 `category`、`category_source`，旧书默认 `uncategorized`；手动修改会记 `category_updated_at`、`category_updated_by`。五个 ID 为 `literature`、`web-fiction`、`nonfiction`、`science-tools`、`uncategorized`。`GET /api/books?category=...` 和 MCP `list_books({"category":"..."})` 支持筛选；原无参调用仍返回全部目录。管理员 `POST /api/books/category` 提交 JSON `{ "name":"原文件名.txt", "category":"literature" }`；普通身份和 Kindle 设备会话不能调整。上传接口 `POST /api/import?name=...&category=...` 校验枚举；旧脚本省略分类时归待分类，空值或无效值拒绝。前端确认框每本必选分类后才提交。
+
+运行 `core/selftest-import.py`、`core/selftest-cloud.py`、`core/selftest-browser.py`；安装扩展时另跑 `core/selftest-kindle.py`。测试使用临时书库，覆盖默认折叠、搜索、批量/逐本分类、权限、失败清理和既有阅读数据保留。回滚前单独保留升级后的 `library.json` 快照，因为旧代码重新扫描会丢弃新分类字段；只恢复代码和参考文档，不用旧书库或进度数据回滚。重装新版时按现存文件名合并快照中的分类字段即可保留人工结果。
+
 ### Kindle 设备配对（安装可选扩展后）
 
 主人 `user` 用现有身份令牌进入阅读页，在书库抽屉底部生成配对链接；只在受信任的 Kindle 浏览器打开并点击确认。GET 只显示表单，POST 才一次性兑换。设备 Cookie 为 `Secure`、`HttpOnly`、`SameSite=Lax`，有效期 90 天；服务端只保存随机会话密钥的摘要。主人可列出并撤销 Kindle 会话，设备不能凭 Cookie 创建新配对、导入或删书、读取审计。设备的进度和批注仍归 `user（002）`，MCP 的 Bearer 令牌不变。

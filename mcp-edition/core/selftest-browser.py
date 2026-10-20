@@ -156,6 +156,52 @@ with tempfile.TemporaryDirectory() as directory:
                         "https://reader.example.com/k/")
                 else:
                     assert page.locator("#kindlePairing").count() == 0
+                page.locator("#libTabs [data-tab=lib]").tap()
+                assert page.locator(".shelf-group").count() == 5
+                assert page.locator(".shelf-group[open]").count() == 0
+                pending = page.locator('.shelf-group[data-category=uncategorized]')
+                literature = page.locator('.shelf-group[data-category=literature]')
+                pending.locator("summary").tap()
+                literature.locator("summary").tap()
+                assert page.locator(".shelf-group[open]").count() == 2
+                assert literature.locator(".hint").inner_text() == "暂无书籍"
+                page.reload()
+                page.wait_for_function("document.querySelectorAll('.shelf-group').length === 5")
+                page.locator("#btnLib").tap()
+                assert page.locator(".shelf-group[open]").count() == 2
+                page.locator("#libQuery").fill("test")
+                assert page.locator(".shelf-group:not([hidden])").count() == 1
+                assert pending.locator(".book").is_visible()
+                page.locator("#libQuery").fill("")
+                assert page.locator(".shelf-group[open]").count() == 2
+                page.locator("#fileInput").set_input_files([
+                    {"name":"ui-novel.txt", "mimeType":"text/plain", "buffer":"小说正文。".encode()},
+                    {"name":"ui-tools.txt", "mimeType":"text/plain", "buffer":"工具正文。".encode()}])
+                assert page.locator("#uploadDialog").is_visible()
+                assert page.locator("#uploadSubmit").is_disabled()
+                assert not (base / "书库/ui-novel.txt").exists()
+                page.locator("#uploadCategory").select_option("literature")
+                page.locator('#uploadRows select').nth(1).select_option("science-tools")
+                artifact = os.environ.get('READER_TEST_SCREENSHOTS')
+                if artifact:
+                    pathlib.Path(artifact).mkdir(parents=True, exist_ok=True)
+                    page.screenshot(path=str(pathlib.Path(artifact) / 'upload-categories-mobile.png'))
+                page.locator("#uploadSubmit").tap()
+                page.wait_for_function("document.querySelector('#uploadDialog').hidden && document.querySelectorAll('#libList .book').length === 3")
+                page.locator("#libQuery").fill("ui-tools")
+                assert page.locator('.shelf-group[data-category=science-tools] .book').is_visible()
+                page.locator('.shelf-group[data-category=science-tools] .book-category select').select_option("web-fiction")
+                page.wait_for_function("document.querySelector('.shelf-group[data-category=web-fiction] .book') !== null")
+                catalog = {b['name']: b for b in request('/api/books')['books']}
+                assert catalog['ui-tools.txt']['category'] == 'web-fiction'
+                assert catalog['ui-novel.txt']['category'] == 'literature'
+                assert request('/api/reading-progress?name=test.txt')['progress'] == saved
+                assert len(request('/api/notes?name=test.txt')['highlights']) == 5
+                page.locator("#libQuery").fill("")
+                artifact = os.environ.get('READER_TEST_SCREENSHOTS')
+                if artifact:
+                    pathlib.Path(artifact).mkdir(parents=True, exist_ok=True)
+                    page.screenshot(path=str(pathlib.Path(artifact) / 'bookshelf-mobile.png'))
                 context.close()
                 desktop = browser.new_context(viewport={"width": 1280, "height": 820})
                 desktop_page = desktop.new_page()
@@ -175,10 +221,17 @@ with tempfile.TemporaryDirectory() as directory:
                 annotations = request("/api/notes/annotations?name=test.txt&highlight_id=" + h002,
                                       "op004")["annotations"]
                 assert len(annotations) == 1 and annotations[0]["author_id"] == "op004"
+                desktop_page.locator('#btnCloseHlPanel').click()
+                desktop_page.locator('#btnLib').click()
+                assert not desktop_page.locator('#importTrigger').is_visible()
+                assert desktop_page.locator('#libList .book-category').count() == 0
+                assert desktop_page.locator('.shelf-group').count() == 5
+                desktop_page.locator('#libQuery').fill('ui-novel')
+                assert desktop_page.locator('.shelf-group[data-category=literature] .book').is_visible()
                 desktop.close()
             finally:
                 browser.close()
-        print("PASS: mobile/desktop browser colors, overlap choices, cross-user reply, filter, font refresh, touch selection, overview identity labels")
+        print("PASS: mobile/desktop co-reading; collapsed groups, remembered state, cross-group search, required batch/per-file categories, owner-only controls")
     finally:
         process.terminate()
         process.wait(timeout=10)
