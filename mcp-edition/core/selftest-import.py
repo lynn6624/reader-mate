@@ -109,7 +109,15 @@ def main():
             assert categorize("missing.txt", "nonfiction")[0] == 404
             assert categorize("a.txt", "nonfiction")[0] == 200
             listing = call("/api/books")[1]
-            assert listing["can_manage"] and len(listing["categories"]) == 5
+            assert listing["can_manage"] and len(listing["categories"]) == 6
+            labels = {c['id']: c['name'] for c in listing['categories']}
+            assert labels['nonfiction'] == '随笔与纪实' and labels['humanities'] == '人文社科'
+            assert next(b for b in listing['books'] if b['name'] == 'a.txt')['category'] == 'nonfiction'
+            prior_category = {key:value for key,value in json.loads((base / 'data/library.json').read_text(encoding='utf-8'))['books']['a.txt'].items() if key.startswith('category')}
+            assert upload("research.txt", b"research", category="humanities")[0] == 200
+            assert [b['name'] for b in call('/api/books?category=humanities')[1]['books']] == ['research.txt']
+            after_category = {key:value for key,value in json.loads((base / 'data/library.json').read_text(encoding='utf-8'))['books']['a.txt'].items() if key.startswith('category')}
+            assert after_category == prior_category
             assert not call("/api/books", "test-reader")[1]["can_manage"]
             by_name = {book["name"]:book for book in listing["books"]}
             assert by_name["a.txt"]["category_source"] == "manual"

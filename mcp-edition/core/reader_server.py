@@ -39,8 +39,9 @@ REFERENCE_BOOK_NAME = "MCP工具标准调用参考_只读.txt"
 BOOK_CATEGORIES = (
     ("literature", "文学小说"),
     ("web-fiction", "网络文学"),
-    ("nonfiction", "随笔与非虚构"),
+    ("nonfiction", "随笔与纪实"),
     ("science-tools", "科普与工具"),
+    ("humanities", "人文社科"),
     ("uncategorized", "待分类"),
 )
 CATEGORY_IDS = frozenset(key for key, _ in BOOK_CATEGORIES)

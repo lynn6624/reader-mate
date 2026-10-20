@@ -157,7 +157,9 @@ with tempfile.TemporaryDirectory() as directory:
                 else:
                     assert page.locator("#kindlePairing").count() == 0
                 page.locator("#libTabs [data-tab=lib]").tap()
-                assert page.locator(".shelf-group").count() == 5
+                assert page.locator(".shelf-group").count() == 6
+                assert page.locator('.shelf-group[data-category=nonfiction] summary b').inner_text() == '随笔与纪实'
+                assert page.locator('.shelf-group[data-category=humanities] summary b').inner_text() == '人文社科'
                 assert page.locator(".shelf-group[open]").count() == 0
                 pending = page.locator('.shelf-group[data-category=uncategorized]')
                 literature = page.locator('.shelf-group[data-category=literature]')
@@ -166,7 +168,7 @@ with tempfile.TemporaryDirectory() as directory:
                 assert page.locator(".shelf-group[open]").count() == 2
                 assert literature.locator(".hint").inner_text() == "暂无书籍"
                 page.reload()
-                page.wait_for_function("document.querySelectorAll('.shelf-group').length === 5")
+                page.wait_for_function("document.querySelectorAll('.shelf-group').length === 6")
                 page.locator("#btnLib").tap()
                 assert page.locator(".shelf-group[open]").count() == 2
                 page.locator("#libQuery").fill("test")
@@ -181,7 +183,7 @@ with tempfile.TemporaryDirectory() as directory:
                 assert page.locator("#uploadSubmit").is_disabled()
                 assert not (base / "书库/ui-novel.txt").exists()
                 page.locator("#uploadCategory").select_option("literature")
-                page.locator('#uploadRows select').nth(1).select_option("science-tools")
+                page.locator('#uploadRows select').nth(1).select_option("humanities")
                 artifact = os.environ.get('READER_TEST_SCREENSHOTS')
                 if artifact:
                     pathlib.Path(artifact).mkdir(parents=True, exist_ok=True)
@@ -189,8 +191,8 @@ with tempfile.TemporaryDirectory() as directory:
                 page.locator("#uploadSubmit").tap()
                 page.wait_for_function("document.querySelector('#uploadDialog').hidden && document.querySelectorAll('#libList .book').length === 3")
                 page.locator("#libQuery").fill("ui-tools")
-                assert page.locator('.shelf-group[data-category=science-tools] .book').is_visible()
-                page.locator('.shelf-group[data-category=science-tools] .book-category select').select_option("web-fiction")
+                assert page.locator('.shelf-group[data-category=humanities] .book').is_visible()
+                page.locator('.shelf-group[data-category=humanities] .book-category select').select_option("web-fiction")
                 page.wait_for_function("document.querySelector('.shelf-group[data-category=web-fiction] .book') !== null")
                 catalog = {b['name']: b for b in request('/api/books')['books']}
                 assert catalog['ui-tools.txt']['category'] == 'web-fiction'
@@ -225,7 +227,7 @@ with tempfile.TemporaryDirectory() as directory:
                 desktop_page.locator('#btnLib').click()
                 assert not desktop_page.locator('#importTrigger').is_visible()
                 assert desktop_page.locator('#libList .book-category').count() == 0
-                assert desktop_page.locator('.shelf-group').count() == 5
+                assert desktop_page.locator('.shelf-group').count() == 6
                 desktop_page.locator('#libQuery').fill('ui-novel')
                 assert desktop_page.locator('.shelf-group[data-category=literature] .book').is_visible()
                 desktop.close()

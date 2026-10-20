@@ -6,7 +6,7 @@
 
 1. list_books({})
    从 books 里选一本，记下准确的 name。
-   返回还含 categories（五类的 id、名称、书籍数）。按分类读取目录用 list_books({"category":"literature"})；省略 category 保持返回全部书籍。有效分类 ID：literature＝文学小说，web-fiction＝网络文学，nonfiction＝随笔与非虚构，science-tools＝科普与工具，uncategorized＝待分类。分类仅为书籍元数据，不改变文件名、原文偏移或权限；普通共读身份只能浏览分类。
+   返回还含 categories（六类的 id、名称、书籍数）。按分类读取目录用 list_books({"category":"literature"})；省略 category 保持返回全部书籍。有效分类 ID：literature＝文学小说，web-fiction＝网络文学，nonfiction＝随笔与纪实，science-tools＝科普与工具，humanities＝人文社科，uncategorized＝待分类。人文社科用于哲学、心理学、社会学、性别研究、传播学、思想史等理论及研究著作，可调用 list_books({"category":"humanities"}) 查看目录。nonfiction 仅更名，原分类 ID 和用户已设置的分类保留，不会自动移动书籍。分类仅为书籍元数据，不改变文件名、原文偏移或权限；普通共读身份只能浏览分类。
 
 2. get_reading_progress({"name":"实际文件名.txt"})
    默认读取当前令牌对应身份自己的进度。返回的 revision 是保存时要带的 expected_revision；没有记录时 revision 为 0，offset 从 0 开始。若 progress.location_status 表示正文变化或位置不能可靠核对，先重新查看正文，不要盲用旧 offset。

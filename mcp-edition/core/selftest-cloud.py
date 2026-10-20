@@ -78,7 +78,7 @@ async def run():
                     params={'name':guide_name}, headers={'X-Who-Token':'test-user'},
                     content=b'replacement')).status_code == 403
                 assert (await client.post(f'http://127.0.0.1:{hp}/api/books/category',
-                    json={'name':guide_name, 'category':'science-tools'},
+                    json={'name':guide_name, 'category':'humanities'},
                     headers={'X-Who-Token':'test-user'})).status_code == 200
                 assert (await client.post(f'http://127.0.0.1:{mp}/mcp/{path_key}')).status_code == 401
                 assert (await client.post(f'http://127.0.0.1:{mp}/mcp', headers={'Authorization':'Bearer test-user'})).status_code == 404
@@ -101,8 +101,10 @@ async def run():
                             guide = await call('get_calling_guide', {})
                             assert guide['name'] == guide_name and 'update_progress' in guide['text']
                             listing = await call('list_books', {})
-                            assert len(listing['books']) == 2 and len(listing['categories']) == 5
-                            filtered = await call('list_books', {'category':'science-tools'})
+                            assert len(listing['books']) == 2 and len(listing['categories']) == 6
+                            list_schema = next(t.inputSchema for t in tools.tools if t.name == 'list_books')
+                            assert 'humanities' in list_schema['properties']['category']['enum']
+                            filtered = await call('list_books', {'category':'humanities'})
                             assert [book['name'] for book in filtered['books']] == [guide_name]
                             invalid = await session.call_tool('list_books', {'category':'invented'})
                             assert invalid.isError
