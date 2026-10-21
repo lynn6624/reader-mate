@@ -175,6 +175,10 @@ def run(args):
             mirror['books'] = {n:reader.book_progress(v) for n,v in changed['books'].items()}
             library = reader.load_json(str(root / 'data/library.json'), {})
             reader.write_progress_md(mirror, library)
+            # The maintenance command may run as root; retain the old mirror's owner/mode.
+            template = backup / 'reading-progress.md'
+            if template.exists():
+                write_atomic(mirror_path, mirror_path.read_bytes(), template)
         except Exception:
             write_atomic(progress_path, before)
             if (backup / 'reading-progress.md').exists():
