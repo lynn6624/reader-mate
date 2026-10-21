@@ -26,7 +26,7 @@ def digest(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def write_atomic(path, raw, template=None):
+def write_atomic(path, raw, template=None, attributes=None):
     path = Path(path)
     metadata = (Path(template).stat() if template else path.stat()) if (template or path.exists()) else None
     handle, temp = tempfile.mkstemp(prefix='.' + path.name + '.', dir=path.parent)
@@ -37,6 +37,10 @@ def write_atomic(path, raw, template=None):
             os.chmod(temp, metadata.st_mode & 0o777)
             if hasattr(os, 'chown') and os.geteuid() == 0:
                 os.chown(temp, metadata.st_uid, metadata.st_gid)
+        if attributes:
+            os.chmod(temp, attributes['mode'])
+            if hasattr(os, 'chown') and os.geteuid() == 0:
+                os.chown(temp, attributes['uid'], attributes['gid'])
         os.replace(temp, path)
     finally:
         if os.path.exists(temp):
@@ -71,7 +75,8 @@ def run(args):
             raise ValueError('Progress mirror changed since rebuild; inspect before rollback')
         write_atomic(progress_path, (backup / 'progress.json').read_bytes(), progress_path)
         if (backup / 'reading-progress.md').exists():
-            write_atomic(mirror_path, (backup / 'reading-progress.md').read_bytes(), mirror_path)
+            write_atomic(mirror_path, (backup / 'reading-progress.md').read_bytes(),
+                         attributes=manifest.get('mirror_attributes'))
         elif mirror_path.exists():
             mirror_path.unlink()
         return {'rolled_back':True, 'offsets_revisions_times_preserved':True}
@@ -153,6 +158,9 @@ def run(args):
     if args.export_index:
         write_atomic(Path(args.export_index).resolve(), encoded(exported))
     if args.apply and changed != document:
+        mirror_stat = mirror_path.stat() if mirror_path.exists() else progress_path.stat()
+        mirror_attributes = dict(mode=mirror_stat.st_mode & 0o777,
+                                 uid=mirror_stat.st_uid,gid=mirror_stat.st_gid)
         backup = Path(args.backup_dir).resolve()
         backup.mkdir(mode=0o700, parents=True, exist_ok=False)
         shutil.copy2(progress_path, backup / 'progress.json')
@@ -165,7 +173,7 @@ def run(args):
                 raise ValueError('Book content changed during preview; refusing stale chapter metadata')
         after = encoded(changed)
         manifest = {'before_sha256':digest(before),'after_sha256':digest(after),
-                    'index_version':INDEX_VERSION}
+                    'index_version':INDEX_VERSION,'mirror_attributes':mirror_attributes}
         write_atomic(backup / 'manifest.json', encoded(manifest))
         write_atomic(progress_path, after)
         old_mirror = reader.MD_FILE
@@ -176,13 +184,11 @@ def run(args):
             library = reader.load_json(str(root / 'data/library.json'), {})
             reader.write_progress_md(mirror, library)
             # The maintenance command may run as root; retain the old mirror's owner/mode.
-            template = backup / 'reading-progress.md'
-            if template.exists():
-                write_atomic(mirror_path, mirror_path.read_bytes(), template)
+            write_atomic(mirror_path, mirror_path.read_bytes(), attributes=mirror_attributes)
         except Exception:
             write_atomic(progress_path, before)
             if (backup / 'reading-progress.md').exists():
-                write_atomic(mirror_path, (backup / 'reading-progress.md').read_bytes())
+                write_atomic(mirror_path, (backup / 'reading-progress.md').read_bytes(), attributes=mirror_attributes)
             raise
         finally:
             reader.MD_FILE = old_mirror
