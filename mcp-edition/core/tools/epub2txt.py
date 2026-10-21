@@ -280,51 +280,14 @@ def read_opf(zf: zipfile.ZipFile, opf_path: str):
     return opf_dir, spine_hrefs
 
 
-def extract_text(epub_path: str) -> tuple[str, list[str]]:
-    """
-    解析整个 epub，返回 (book_title, lines)。
-    解析失败抛 RuntimeError，单章节解析失败跳过。
-    """
-    with zipfile.ZipFile(epub_path) as zf:
-        opf_path = find_opf_path(zf)
-        _opf_dir, spine_hrefs = read_opf(zf, opf_path)
-        # 书名（尽力从 dc:title 取）
-        try:
-            opf_root = ET.fromstring(zf.read(opf_path))
-            tnode = opf_root.find("opf:metadata/dc:title", OPF_NS)
-            book_title = (tnode.text or "").strip() if tnode is not None and tnode.text else ""
-        except Exception:
-            book_title = ""
-        out_lines: list[str] = []
-        if book_title:
-            out_lines.append(book_title)
-            out_lines.append("")
-        skip_files: list[str] = []
-        for href in spine_hrefs:
-            if not href:
-                continue
-            try:
-                data = zf.read(href)
-            except KeyError:
-                skip_files.append(href)
-                continue
-            try:
-                lines = html_to_lines(data)
-            except Exception:
-                skip_files.append(href)
-                continue
-            if lines:
-                out_lines.extend(lines)
-                out_lines.append("")  # 章节之间留空行
-        if skip_files:
-            sys.stderr.write(
-                f"[warn] {os.path.basename(epub_path) if isinstance(epub_path, (str, bytes, os.PathLike)) else '上传文件'}: 跳过 {len(skip_files)} 个解析失败的资源: "
-                + ", ".join(skip_files) + "\n"
-            )
-    # 收尾：去掉文末多余的空行
-    while out_lines and out_lines[-1] == "":
-        out_lines.pop()
-    return book_title, out_lines
+def extract_text(epub_path):
+    """Strict shared converter; retain the historical (title, lines) CLI contract."""
+    try:
+        from .epub_navigation import extract_document
+    except ImportError:
+        from epub_navigation import extract_document
+    result = extract_document(epub_path)
+    return result['title'], result['text'].rstrip('\n').split('\n')
 
 
 # ---------- CLI ----------

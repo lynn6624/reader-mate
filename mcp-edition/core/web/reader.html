@@ -452,6 +452,18 @@
 }
 #accessGate button:disabled{opacity:.65; cursor:wait}
 #accessGate .gateError{min-height:21px; margin-top:9px; color:#b3261e; font-size:12.5px}
+  #tocPanel{position:fixed;inset:0 auto 0 0;width:min(390px,94vw);background:var(--card);border-right:1px solid var(--line);z-index:51;display:none;flex-direction:column}
+  #tocPanel.on{display:flex}
+  #tocPanel header{display:flex;align-items:center;gap:8px;padding:12px;border-bottom:1px solid var(--line)}
+  #tocPanel header b{flex:1}
+  #tocBody{overflow:auto;flex:1;padding:10px}
+  .toc-row{display:flex;align-items:stretch;border-bottom:1px solid var(--line);margin-left:calc(var(--depth,0)*14px)}
+  .toc-jump{flex:1;text-align:left;border:0;background:none;color:var(--fg);font:inherit;min-height:44px;padding:10px 6px;word-break:break-word}
+  .toc-toggle{min-width:38px;min-height:44px;border:0;background:none;color:var(--accent)}
+  #tocAdmin{padding:10px;border-top:1px solid var(--line);font-size:13px;max-height:40vh;overflow:auto}
+  #tocAdmin summary{min-height:36px;cursor:pointer}
+  #tocAdmin .btn{margin:5px 0;white-space:normal}
+  #tocPreview{white-space:pre-wrap;word-break:break-word}
 </style>
 </head>
 <body>
@@ -471,6 +483,7 @@
 
 <div id="bar">
   <button class="ibtn" id="btnLib" title="书库">☰<span class="lbl"> 书库</span></button>
+  <button class="ibtn" id="btnToc" title="本书章节目录" aria-label="本书章节目录">目录</button>
   <div id="titleBox">
     <span id="bkTitle">读伴</span>
     <span id="bkChapter"></span>
@@ -519,6 +532,17 @@
 <div id="view"><div id="reader"></div></div>
 
 <div id="mask"></div>
+<aside id="tocPanel" aria-label="本书目录">
+  <header><b>章节目录</b><button class="ibtn" id="tocReload" title="刷新目录">↻</button><button class="ibtn" id="tocClose" aria-label="关闭目录">×</button></header>
+  <div id="tocBody"></div>
+  <details id="tocAdmin" hidden><summary>目录修正（管理员）</summary>
+    <p>仅修改目录，不修改正文。导出后可编辑标题、offset、parent_id及数组顺序；quote须与新位置的40个UTF-16单位原文一致。</p>
+    <button class="btn" id="tocExport" type="button">导出目录 JSON</button>
+    <label class="btn">选择修正 JSON<input id="tocFile" type="file" accept=".json,application/json" hidden></label>
+    <div id="tocPreview" aria-live="polite"></div>
+    <button class="btn primary" id="tocApply" type="button" hidden>确认保存此目录</button>
+  </details>
+</aside>
 
 <aside id="libPanel">
   <header>
@@ -737,8 +761,15 @@ const state = {
   who: "user",         // 当前身份（默认 user；URL/localStorage 决定）—— 决定进度读写走哪个身份
   viewerId: "user",    // 只信服务端用令牌解析出的身份，用于共读颜色与操作权限
   temporaryView: false,
+  preciseOffset: null,
 };
 let gateIdentity = "";
+let navigationOpen = false, readingWindowBusy = null, readingWindowGeneration = 0, speechWindow = null;
+function bookSlice(start,end){
+  const base = state.book && state.book.text_base || 0;
+  if (!state.book || start < base || end > base + state.book.text.length) return "";
+  return state.book.text.slice(start-base,end-base);
+}
 
 /* ---------------- 带鉴权的 fetch 包装 ----------------
  * 所有调 /api/* 的请求都走这里：自动带 X-Token，401 时弹 showErr 提示。
@@ -809,9 +840,9 @@ const esc = s => s.replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",
 const CHAP_RE = /^(第\s*[0-9零一二三四五六七八九十百千万两]+\s*[章节回卷篇幕]|Chapter\s+\d+|CHAPTER\s+\d+)[^\n]{0,40}$/;
 const LONG_SEG = 1200;
 
-function splitSegments(text, structure){
+function splitSegments(text, structure, base = 0){
   const segs = [];
-  let pos = 0, chap = "";
+  let pos = base, chap = "";
   const indexed = structure && Array.isArray(structure.headings) && Array.isArray(structure.toc_regions);
   const headings = indexed ? structure.headings : [];
   let headingCursor = 0;
@@ -897,15 +928,16 @@ let saveInFlight = false, saveQueued = false, saveQueuedListening = false, saveB
 function payload(){
   const seg = state.segs[state.currentSeg] || { start: 0, chapter: "" };
   const chars = state.book ? state.book.chars : 0;
+  const at = Number.isInteger(state.preciseOffset) ? state.preciseOffset : seg.start;
   // offset = 眼睛位置（跟 state.currentSeg 走）；tts_offset = 嘴位置（独立字段，互不覆盖）
   return {
     name: state.book.name,
     who: state.who,                                // 进度身份：按当前身份落，不互相覆盖
-    offset: seg.start,
+    offset: at,
     chars,
-    percent: chars ? seg.start / chars : 0,
+    percent: chars ? at / chars : 0,
     chapter: seg.chapter || "",
-    anchor: (state.book.text.slice(seg.start, seg.start + 40) || "").replace(/\s+/g, " "),
+    anchor: bookSlice(at, Math.min(at+40,(state.book.text_base||0)+state.book.text.length)).replace(/\s+/g, " "),
     tts_offset: state.ttsOffset || 0,
     expected_revision: +(state.book.progress && state.book.progress.revision || 0),
     book_revision: state.book.book_revision,
@@ -918,13 +950,13 @@ function progressDirty(book, data){
     +(saved.tts_offset || 0) !== data.tts_offset;
 }
 function scheduleSave(){
-  if (state.temporaryView || saveBlocked) return;
+  if (state.temporaryView || saveBlocked || navigationOpen) return;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveNow, 1200);
 }
 async function saveNow(listeningOnly = false){
   clearTimeout(saveTimer); saveTimer = null;
-  if (!state.book || saveBlocked || (state.temporaryView && !listeningOnly)) return;
+  if (!state.book || saveBlocked || navigationOpen || (state.temporaryView && !listeningOnly)) return;
   if (saveInFlight){
     saveQueued = true;
     saveQueuedListening = saveQueuedListening || listeningOnly;
@@ -971,7 +1003,7 @@ function setTemporaryView(active){
   $("#btnKeepPosition").hidden = !active;
 }
 window.addEventListener("beforeunload", () => {
-  if (!state.book || state.temporaryView || saveBlocked || saveInFlight) return;
+  if (!state.book || state.temporaryView || saveBlocked || saveInFlight || navigationOpen) return;
   try {
     const data = payload();
     if (!progressDirty(state.book, data)) return;
@@ -996,15 +1028,17 @@ function updateBar(){
   const seg = state.segs[state.currentSeg];
   $("#bkChapter").textContent = (seg && seg.chapter && seg.chapter !== seg.text) ? "· " + seg.chapter : "";
   const chars = state.book ? state.book.chars : 0;
-  const pct = chars && seg ? seg.start / chars : 0;
+  const at = Number.isInteger(state.preciseOffset) ? state.preciseOffset : seg ? seg.start : 0;
+  const pct = chars && seg ? at / chars : 0;
   // 窄屏只留百分比：后面那串"29856/284638"是给 AI 看的字符偏移，手机上会把顶栏挤爆
   $("#pct").textContent = chars
-    ? (pct * 100).toFixed(1) + "%" + (window.innerWidth < 480 ? "" : "　" + seg.start + "/" + chars)
+    ? (pct * 100).toFixed(1) + "%" + (window.innerWidth < 480 ? "" : "　" + at + "/" + chars)
     : "—";
   $("#pbar i").style.width = (pct * 100).toFixed(2) + "%";
 }
 
 let ticking = false;
+for(const event of ['wheel','touchstart','pointerdown']) view.addEventListener(event,()=>{state.preciseOffset=null;},{passive:true});
 view.addEventListener("scroll", () => {
   if (ticking) return;
   ticking = true;
@@ -1014,6 +1048,13 @@ view.addEventListener("scroll", () => {
     const idx = visibleSeg(view.scrollTop);
     if (idx !== state.currentSeg){ state.currentSeg = idx; updateBar(); }
     if (view.scrollTop + view.clientHeight > view.scrollHeight - 1400) renderMore();
+    if (state.book.windowed && !readingWindowBusy && !navigationOpen && tts.state === "idle" && window.getSelection().isCollapsed){
+      if ((state.book.more_after && state.rendered >= state.segs.length && view.scrollTop + view.clientHeight > view.scrollHeight - 500) ||
+          (state.book.more_before && view.scrollTop < 180)){
+        const off = state.segs[state.currentSeg] && state.segs[state.currentSeg].start;
+        if (Number.isInteger(off)) loadReadingWindow(off).catch(e => toast(e.message));
+      }
+    }
     scheduleSave();
   });
 }, { passive: true });
@@ -1339,9 +1380,20 @@ function ttsNextChunk(text, local){
 
 /* 当前小段 onend → 同一正文段的下一句；段末再接下一段。 */
 function ttsSpeakSeg(idx, fromLocal){
+  if (state.book && idx >= state.segs.length && state.book.windowed && state.book.more_after){
+    const nextOffset=state.book.window_end;
+    if(speechWindow && speechWindow.book===state.book && speechWindow.offset===nextOffset && speechWindow.data){
+      const data=speechWindow.data;speechWindow=null;installReadingWindow(data,nextOffset);
+      idx=Math.max(0,state.segs.findIndex(s=>s.end>nextOffset));fromLocal=0;
+    } else {
+      ttsStopInternal(true);state.ttsOffset=nextOffset;
+      toast('后续正文仍在加载，请稍后点朗读继续。',5000);return;
+    }
+  }
   if (!state.book || idx >= state.segs.length){ ttsStopInternal(true); return; }
   ensureRendered(idx + 1);
   const seg = state.segs[idx];
+  if(state.book.windowed && state.book.window_end-seg.end<8000) prefetchSpeechWindow();
   const el = state.els[idx];
   if (!el || !seg){
     // 渲染还没跟上：递归下一段；这是开篇就读到末尾时偶尔发生
@@ -1407,6 +1459,7 @@ function ttsStart(fromOffset){
   if (!ttsSupported()){ toast("这个环境不支持朗读"); return; }
   if (!state.book){ toast("先打开一本书再朗读"); return; }
   if (tts.state !== "idle") return;   // 已开始就别重入
+  state.preciseOffset=null;
   // 点「朗读」这一下是用户手势——趁它还在栈里，给后端音频元素换自动播放许可。
   // （手机 WebView 不给非手势的 play()，不换的话整本都播不出来。）
   if (ttsEngine.unlock) ttsEngine.unlock();
@@ -1415,6 +1468,11 @@ function ttsStart(fromOffset){
   if (!startOff){
     const cur = state.els[state.currentSeg];
     startOff = cur ? (state.segs[state.currentSeg] && state.segs[state.currentSeg].start) || 0 : 0;
+  }
+  if(state.book.windowed && (startOff<(state.book.text_base||0) || startOff>=state.book.window_end)){
+    const book=state.book,gen=tts.gen;
+    loadReadingWindow(startOff).then(()=>{if(state.book===book && gen===tts.gen) ttsStart(startOff);}).catch(e=>toast(e.message));
+    return;
   }
   const startIdx = segIndexAtOffset(startOff);
   tts.state = "playing";
@@ -1788,7 +1846,9 @@ async function openBook(name){
   // 切书之前先停朗读（不 toast，避免干扰"打开中…"）
   if (typeof ttsStopInternal === "function" && tts.state !== "idle") ttsStopInternal(true);
   toast("打开中…", 900);
-  const r = await fetchAuth("/api/book?name=" + encodeURIComponent(name));
+  readingWindowGeneration++; speechWindow = null;
+  state.preciseOffset=null;reader.style.paddingBottom='';
+  const r = await fetchAuth("/api/book?window=1&name=" + encodeURIComponent(name));
   const j = await r.json();
   if (!j.ok){ toast(j.error || "打不开"); return; }
   // 只取当前认证身份的续读位置，不能用其他人的位置冒充自己的进度。
@@ -1799,10 +1859,10 @@ async function openBook(name){
   } else if (!j.by_who && wm === "user" && j.progress && typeof j.progress === "object"){
     prog = j.progress;
   }
-  state.book = Object.assign({}, j, { progress: prog, chars: j.text.length });
+  state.book = Object.assign({}, j, { progress: prog, chars: j.total_units == null ? j.text.length : j.total_units });
   saveBlocked = false;
   setTemporaryView(false);
-  state.segs = splitSegments(j.text, j.chapter_index);
+  state.segs = splitSegments(j.text, j.chapter_index, j.text_base || 0);
   state.els = []; state.rendered = 0; state.currentSeg = 0;
   reader.innerHTML = "";
   $("#bkTitle").textContent = j.name.replace(/\.txt$/i, "");
@@ -1810,6 +1870,7 @@ async function openBook(name){
   const positionStatus = prog && prog.location_status;
   const canResume = !positionStatus || positionStatus === "ok" || positionStatus === "legacy_anchor_verified";
   const off = canResume ? ((prog && prog.offset) || 0) : 0;
+  if(canResume && Object.prototype.hasOwnProperty.call(prog,'offset'))state.preciseOffset=off;
   if (!canResume){
     setTemporaryView(true);
     toast("旧续读位置与当前正文无法核对；请确认位置后点“设为续读点”", 7000);
@@ -1834,6 +1895,43 @@ async function openBook(name){
   closePanels();
 }
 
+function installReadingWindow(data, offset){
+  Object.assign(state.book, {text:data.text, text_base:data.text_base||0,window_start:data.window_start,
+    window_end:data.window_end,more_before:data.more_before,more_after:data.more_after,chapter_index:data.chapter_index});
+  state.segs = splitSegments(data.text,data.chapter_index,data.text_base||0);
+  state.els=[];state.rendered=0;state.lastMarked=null;reader.replaceChildren();renderMore(300);
+  state.currentSeg=segIndexAtOffset(offset);ensureRendered(state.currentSeg+2);
+  const el=state.els[state.currentSeg];
+  if(el) view.scrollTop=Math.max(0,el.offsetTop-VTOP-10);
+  updateBar();
+}
+async function fetchReadingWindow(book,offset){
+  const r=await fetchAuth('/api/book?'+new URLSearchParams({name:book.name,window:'1',offset:String(offset)}));
+  const j=await r.json();
+  if(!r.ok || !j.ok) throw Error(j.error||'读取正文失败');
+  if(j.book_revision!==book.book_revision) throw Error('正文已变化，请重新打开后核对位置');
+  return j;
+}
+async function loadReadingWindow(offset){
+  const book=state.book;
+  if(!book || !book.windowed) return;
+  if(readingWindowBusy) await readingWindowBusy;
+  if(state.book!==book) return;
+  const generation=++readingWindowGeneration;
+  const operation=(async()=>{
+    const data=await fetchReadingWindow(book,offset);
+    if(state.book===book && generation===readingWindowGeneration) installReadingWindow(data,offset);
+  })();
+  readingWindowBusy=operation;
+  try {await operation;} finally {if(readingWindowBusy===operation) readingWindowBusy=null;}
+}
+function prefetchSpeechWindow(){
+  const book=state.book;
+  if(!book || !book.windowed || !book.more_after || (speechWindow && speechWindow.book===book && speechWindow.offset===book.window_end)) return;
+  const pending={book,offset:book.window_end,data:null,error:null};speechWindow=pending;
+  pending.promise=fetchReadingWindow(book,pending.offset).then(data=>{pending.data=data;},error=>{pending.error=error;});
+}
+
 function showEmpty(){
   $("#bkTitle").textContent = "读伴";
   $("#bkChapter").textContent = "";
@@ -1847,14 +1945,20 @@ function showEmpty(){
 }
 
 /* ---------------- 搜索 ---------------- */
-function runSearch(q){
+async function runSearch(q){
   const hits = $("#hits");
   if (!state.book){ hits.innerHTML = '<div class="hint">先打开一本书再搜。</div>'; return; }
   if (!q){ hits.innerHTML = '<div class="hint">输入关键词，回车搜全书。</div>'; return; }
-  const text = state.book.text, lq = q.toLowerCase(), low = text.toLowerCase();
-  const out = []; let from = 0;
+  const book=state.book, text = book.text, lq = q.toLowerCase(), low = text.toLowerCase();
+  let out = []; let from = 0;
   const MAX = 800;
-  while (out.length < MAX){
+  if (book.windowed){
+    const r=await fetchAuth('/api/book/search?'+new URLSearchParams({name:book.name,q}));
+    const result=await r.json();
+    if(state.book!==book) return;
+    if(!r.ok || !result.ok || result.book_revision!==book.book_revision){toast(result.error||'正文已变化，请重新打开');return;}
+    out=result.hits;
+  } else while (out.length < MAX){
     const i = low.indexOf(lq, from);
     if (i < 0) break;
     out.push({
@@ -1888,9 +1992,14 @@ function clearMark(){
   state.lastMarked = null;
 }
 
-function jumpTo(offset, q){
-  if (saveTimer){ clearTimeout(saveTimer); saveTimer = null; saveNow(); }
+async function jumpTo(offset, q, fromNavigation = false){
+  if (saveTimer){ clearTimeout(saveTimer); saveTimer = null; if(!fromNavigation) saveNow(); }
   setTemporaryView(true);
+  state.preciseOffset=fromNavigation ? offset : null;
+  if(fromNavigation) reader.style.paddingBottom='90vh';
+  if(state.book.windowed && (offset<(state.book.text_base||0) || offset >= state.book.window_end)){
+    try {await loadReadingWindow(offset);} catch(e){toast(e.message);return;}
+  }
   const idx = segIndexAtOffset(offset);
   ensureRendered(idx + 2);
   const el = state.els[idx];
@@ -1904,7 +2013,13 @@ function jumpTo(offset, q){
     el.innerHTML = esc(before) + '<mark class="cur">' + esc(mid) + '</mark>' + esc(after);
     state.lastMarked = el;
   }
-  view.scrollTop = Math.max(0, el.offsetTop - VTOP - 90);
+  view.scrollTop = Math.max(0, el.offsetTop - VTOP - (fromNavigation ? 0 : 90));
+  if(fromNavigation && local>0){
+    const walker=document.createTreeWalker(el,NodeFilter.SHOW_TEXT);let node=walker.nextNode(),left=local;
+    while(node && left>=node.textContent.length){left-=node.textContent.length;node=walker.nextNode();}
+    if(node){const range=document.createRange();range.setStart(node,left);range.setEnd(node,Math.min(left+1,node.textContent.length));
+      const rect=range.getBoundingClientRect();view.scrollTop=Math.max(0,view.scrollTop+rect.top-view.getBoundingClientRect().top-20);}
+  }
   state.currentSeg = idx; updateBar();
   toast("临时查看：续读位置未改变", 2800);
   if (window.innerWidth < 900) closePanels();
@@ -1912,12 +2027,14 @@ function jumpTo(offset, q){
 
 /* ---------------- 面板 ---------------- */
 async function openLib(){
+  closePanels();
   $("#libPanel").classList.add("on"); $("#mask").classList.add("on");
   // 也带该身份的进度——不然书库列表的进度条会被 user 那份盖掉
   const wp = await fetchWhoProgress();
   loadBooks(wp);
 }
 function openSearch(){
+  closePanels();
   $("#searchPanel").classList.add("on"); $("#mask").classList.add("on");
   if (!state.book){ $("#hits").innerHTML = '<div class="hint">先打开一本书再搜。</div>'; }
   setTimeout(() => $("#q").focus(), 120);
@@ -1926,9 +2043,129 @@ function closePanels(){
   $("#libPanel").classList.remove("on");
   $("#searchPanel").classList.remove("on");
   $("#mask").classList.remove("on");
+  $("#tocPanel").classList.remove("on"); navigationOpen=false;
 }
 
 /* ---------------- 导入 ---------------- */
+/* ---------------- 章节目录：只读浏览，显式保存才改变续读位置 ---------------- */
+let tocState={name:'',revision:null,book_revision:'',items:[],next:0,collapsed:new Set(),draft:null,visible:200,page:0};
+async function tocPage(reset=false){
+  const book=state.book;if(!book) return;
+  if(reset){tocState={name:book.name,revision:null,book_revision:book.book_revision,items:[],next:0,collapsed:new Set(),draft:null,visible:200,page:0};
+    $('#tocApply').hidden=true;$('#tocPreview').textContent='';}
+  const request=tocState;
+  if(request.name!==book.name)throw Error('书目已切换，请重新打开目录');
+  if(request.loading)return request.loading;
+  const operation=(async()=>{
+  const r=await fetchAuth('/api/navigation?'+new URLSearchParams({name:book.name,offset:String(request.next||0),limit:'200'}));
+  const j=await r.json();
+  if(state.book!==book || tocState!==request) return;
+  if(!r.ok || !j.ok) throw Error(j.error||'读取目录失败');
+  if(j.book_revision!==book.book_revision) throw Error('正文已变化，请重新打开后核对目录');
+  if(request.revision!==null && request.revision!==j.revision) throw Error('目录已更新，请刷新目录');
+  request.revision=j.revision;request.next=j.next_offset;request.status=j.status;request.total=j.total;
+  request.truncated=!!j.truncated;
+  request.items.push(...j.items);$('#tocAdmin').hidden=!j.can_edit;
+  renderToc();
+  })();
+  request.loading=operation;
+  try{return await operation;}finally{if(request.loading===operation)request.loading=null;}
+}
+function renderToc(){
+  const box=$('#tocBody');box.replaceChildren();
+  const hint=document.createElement('p');hint.className='hint';
+  hint.textContent=tocState.status==='content_changed'?'正文已变化，旧目录暂停使用，请管理员核对修正。':
+    tocState.status==='invalid_metadata'?'目录元数据异常，请管理员检查。':
+    tocState.total?'共 '+tocState.total+' 项 · 跳转仅临时查看，可另设为续读点。':'暂无可可靠识别的章节，可继续正常阅读。';
+  if(tocState.truncated)hint.textContent+=' 自动目录已达到8000项上限，请管理员检查。';
+  box.appendChild(hint);
+  const byId=new Map(tocState.items.map(x=>[x.id,x])),parents=new Set(tocState.items.map(x=>x.parent_id).filter(Boolean));
+  let count=0;
+  for(const item of tocState.items){
+    let depth=0,parent=item.parent_id,hidden=false;
+    while(parent && depth<8){if(tocState.collapsed.has(parent))hidden=true;parent=byId.get(parent)?.parent_id;depth++;}
+    if(hidden) continue;
+    const ordinal=count++;if(ordinal<tocState.page*tocState.visible)continue;
+    if(ordinal>=(tocState.page+1)*tocState.visible)break;
+    const row=document.createElement('div');row.className='toc-row';row.style.setProperty('--depth',depth);
+    const toggle=document.createElement('button');toggle.type='button';toggle.className='toc-toggle';
+    toggle.textContent=parents.has(item.id)?tocState.collapsed.has(item.id)?'▸':'▾':'·';
+    toggle.setAttribute('aria-label','展开或收起'+item.title);toggle.disabled=!parents.has(item.id);
+    toggle.setAttribute('aria-expanded',String(!tocState.collapsed.has(item.id)));
+    toggle.addEventListener('click',()=>{if(tocState.collapsed.has(item.id))tocState.collapsed.delete(item.id);else tocState.collapsed.add(item.id);tocState.page=0;renderToc();});
+    const button=document.createElement('button');button.type='button';button.className='toc-jump';button.textContent=item.title;
+    button.dataset.offset=item.offset;
+    button.addEventListener('click',async()=>{
+      if(!state.book || tocState.name!==state.book.name)return;
+      setTemporaryView(true);
+      if(tts.state!=='idle')ttsStopInternal(true);
+      await jumpTo(item.offset,'',true);closePanels();
+    });
+    row.append(toggle,button);box.appendChild(row);
+  }
+  if(tocState.page>0){
+    const previous=document.createElement('button');previous.className='btn';previous.type='button';previous.textContent='上一页目录';
+    previous.addEventListener('click',()=>{tocState.page--;renderToc();box.scrollTop=0;});box.appendChild(previous);
+  }
+  if(count>(tocState.page+1)*tocState.visible || tocState.next!==null){
+    const more=document.createElement('button');more.className='btn';more.textContent='下一页目录';more.type='button';
+    more.addEventListener('click',async()=>{more.disabled=true;
+      try{
+        const visibleCount=()=>{
+          const map=new Map(tocState.items.map(x=>[x.id,x]));
+          return tocState.items.filter(item=>{let parent=item.parent_id,depth=0;while(parent && depth++<8){if(tocState.collapsed.has(parent))return false;parent=map.get(parent)?.parent_id;}return true;}).length;
+        };
+        while(visibleCount()<=(tocState.page+1)*tocState.visible && tocState.next!==null) await tocPage();
+        if(visibleCount()>(tocState.page+1)*tocState.visible)tocState.page++;
+        renderToc();box.scrollTop=0;
+      }catch(e){toast(e.message);more.disabled=false;}});
+    box.appendChild(more);
+  }
+}
+async function openToc(){
+  if(!state.book){toast('先打开一本书');return;}
+  closePanels();navigationOpen=true;clearTimeout(saveTimer);saveTimer=null;
+  $('#tocPanel').classList.add('on');$('#mask').classList.add('on');$('#tocBody').textContent='正在读取目录…';
+  try{await tocPage(true);}catch(e){$('#tocBody').textContent=e.message;}
+}
+$('#btnToc').addEventListener('click',openToc);$('#tocClose').addEventListener('click',closePanels);
+$('#tocReload').addEventListener('click',()=>tocPage(true).catch(e=>toast(e.message)));
+$('#tocExport').addEventListener('click',async()=>{
+  try{
+    while(tocState.next!==null)await tocPage();
+    const value={name:tocState.name,book_revision:tocState.book_revision,expected_revision:tocState.revision,items:tocState.items};
+    const blob=new Blob([JSON.stringify(value,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download=tocState.name+'.navigation.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),3000);
+  }catch(e){toast(e.message);}
+});
+$('#tocFile').addEventListener('change',async e=>{
+  $('#tocApply').hidden=true;tocState.draft=null;
+  const file=e.target.files[0];if(!file)return;
+  const request=tocState;
+  try{
+    if(file.size>8*1024*1024)throw Error('目录JSON上限8MB');
+    const data=JSON.parse(await file.text());
+    if(data.name!==tocState.name)throw Error('修正文件属于另一书目，请核对书名');
+    const r=await fetchAuth('/api/navigation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...data,dry_run:true})});
+    const j=await r.json();if(!r.ok || !j.ok)throw Error(j.error||'预览失败');
+    if(tocState!==request || state.book?.name!==request.name)throw Error('书目已切换，请重新打开目录');
+    tocState.draft={name:data.name,book_revision:j.book_revision,expected_revision:j.expected_revision,items:j.items,confirm_digest:j.preview_digest};
+    $('#tocPreview').textContent='预览：'+j.previous_total+' → '+j.total+' 项；仅更新目录。\n'+j.items.slice(0,20).map(x=>x.title+' @ '+x.offset).join('\n')+(j.total>20?'\n…仅列出前20项':'');
+    $('#tocApply').hidden=false;
+  }catch(error){$('#tocPreview').textContent=error.message;}
+  e.target.value='';
+});
+$('#tocApply').addEventListener('click',async()=>{
+  const draft=tocState.draft;if(!draft)return;$('#tocApply').disabled=true;
+  try{
+    if(state.book?.name!==draft.name)throw Error('书目已切换，请重新预览');
+    const r=await fetchAuth('/api/navigation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(draft)});
+    const j=await r.json();if(!r.ok || !j.ok)throw Error(j.error||'保存失败');
+    if(state.book?.name!==draft.name)return;
+    await tocPage(true);toast('目录已保存；正文和续读点未修改');
+  }catch(e){$('#tocPreview').textContent=e.message;}finally{$('#tocApply').disabled=false;}
+});
+
 let pendingUploads = [];
 let uploadBusy = false;
 function validateUploadChoices(){
@@ -1975,17 +2212,20 @@ $("#uploadForm").addEventListener("submit", async e => {
   $("#uploadForm").querySelectorAll("button,select").forEach(el => { el.disabled = true; });
   let ok = 0;
   const failed = [];
+  const importWarnings = [];
   for (const [index, f] of pendingUploads.entries()){
     $("#uploadStatus").textContent = "识别并导入 " + (index + 1) + " / " + pendingUploads.length + "：" + f.name;
     try {
       const r = await fetchAuth("/api/import?name=" + encodeURIComponent(f.name) +
         "&category=" + encodeURIComponent(choices[index]), { method: "POST", body: f });
       const j = await r.json();
-      if (j.ok) ok++; else failed.push(f.name + "：" + (j.error || "导入失败"));
+      if (j.ok){ok++;if(j.warnings && j.warnings.length)importWarnings.push(f.name+'：'+j.warnings[0]);}
+      else failed.push(f.name + "：" + (j.error || "导入失败"));
     } catch (e){ failed.push(f.name + "：连接后端失败"); }
   }
   toast("导入 " + ok + " / " + pendingUploads.length + " 本" +
-        (failed.length ? "；失败：" + failed[0] + (failed.length > 1 ? " 等 " + failed.length + " 本" : "") : ""), 7000);
+        (failed.length ? "；失败：" + failed[0] + (failed.length > 1 ? " 等 " + failed.length + " 本" : "") : "")+
+        (importWarnings.length?'；提示：'+importWarnings[0]:''), 7000);
   pendingUploads = [];
   uploadBusy = false;
   $("#uploadForm").querySelectorAll("button,select").forEach(el => { el.disabled = false; });
@@ -2027,14 +2267,19 @@ document.addEventListener("keydown", e => {
     return;
   }
   if (e.key === "Escape"){ closePanels(); clearMark(); return; }
+  if (navigationOpen) return;
   if (e.key === "/"){ e.preventDefault(); openSearch(); return; }
   if (!state.book) return;
   const page = view.clientHeight * 0.92;
+  if([' ','PageDown','PageUp','j','k','Home','ArrowUp','ArrowDown'].includes(e.key))state.preciseOffset=null;
   if (e.key === " " || e.key === "PageDown" || e.key === "j"){
     e.preventDefault(); view.scrollBy({ top: page, behavior: "smooth" });
   } else if (e.key === "PageUp" || e.key === "k"){
     e.preventDefault(); view.scrollBy({ top: -page, behavior: "smooth" });
-  } else if (e.key === "Home"){ view.scrollTo({ top: 0 }); }
+  } else if (e.key === "Home"){
+    if(state.book.windowed && state.book.text_base>0)loadReadingWindow(0).then(()=>view.scrollTo({top:0})).catch(e=>toast(e.message));
+    else view.scrollTo({top:0});
+  }
 });
 
 let dragDepth = 0;
@@ -2174,7 +2419,7 @@ function selectionInfo(range){
   const start = startSeg.start + startLocal;
   const end = endSeg.start + endLocal;
   // 以规范化书籍原文为准，跨段时连同真实空格/换行一起保存。
-  const text = state.book.text.slice(start, end);
+  const text = bookSlice(start, end);
   return { start, end, text, startSegIdx, endSegIdx, startLocal, endLocal };
 }
 
@@ -2185,7 +2430,7 @@ async function doHighlight(kind){
   if (!info) return;
   // 校验：start/end 在书文本长度内、长度 1~4000 分
   if (info.end <= info.start) return;
-  if (info.end > state.book.text.length) return;
+  if (info.end > state.book.chars) return;
   const chapter = (state.segs[info.startSegIdx].chapter) || "";
   // 服务端校验原文与 UTF-16 偏移后再重绘，重叠区域始终只绘一层。
   const style = "line";
@@ -2359,7 +2604,9 @@ function progressReaderLabel(readerId){
 }
 function visibleHighlights(){
   return notesCache.list.filter(h => (!h.location_status || h.location_status === "ok") &&
-    state.book.text.slice(h.start, h.end) === h.text &&
+    h.start < (state.book.text_base||0)+state.book.text.length && h.end>(state.book.text_base||0) &&
+    bookSlice(Math.max(h.start,state.book.text_base||0),Math.min(h.end,(state.book.text_base||0)+state.book.text.length)) ===
+      h.text.slice(Math.max(0,(state.book.text_base||0)-h.start),Math.min(h.end,(state.book.text_base||0)+state.book.text.length)-h.start) &&
     ($("#hlVisibility").value === "all" || (h.author_id || h.owner) === state.viewerId));
 }
 function paintHighlightSegment(segIdx, hs){
@@ -2993,9 +3240,14 @@ function jumpToHighlight(h){
   }
   doJumpToHighlight(h);
 }
-function doJumpToHighlight(h){
+async function doJumpToHighlight(h){
   if (!state.book || !h) return;
-  if (state.book.text.slice(h.start, h.end) !== h.text){
+  state.preciseOffset=null;
+  if(state.book.windowed && (h.start<(state.book.text_base||0) || h.end>state.book.window_end)){
+    setTemporaryView(true);
+    try {await loadReadingWindow(h.start);} catch(e){toast(e.message);return;}
+  }
+  if (bookSlice(h.start, h.end) !== h.text){
     toast("这条划线定位异常，原文可能已变化", 4000); return;
   }
   if (saveTimer){ clearTimeout(saveTimer); saveTimer = null; saveNow(); }

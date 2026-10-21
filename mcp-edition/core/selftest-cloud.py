@@ -16,7 +16,7 @@ def port():
 async def run():
     with tempfile.TemporaryDirectory() as d:
         base = pathlib.Path(d)
-        for filename in ('reader_server.py', 'mcp_server.py', 'chapter_index.py', 'progress_catalog.py'):
+        for filename in ('reader_server.py', 'mcp_server.py', 'chapter_index.py', 'progress_catalog.py', 'navigation.py'):
             shutil.copy(ROOT / filename, base / filename)
         guide_name = 'MCP工具标准调用参考_只读.txt'
         shutil.copy(ROOT / guide_name, base / guide_name)

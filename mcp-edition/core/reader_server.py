@@ -15,16 +15,17 @@
 """
 import hashlib
 import hmac
-import io
 import json
 import os
 import re
 import secrets
+import subprocess
+import sys
+import tempfile
 import threading
 import time
 import urllib.parse
 import urllib.request
-import zipfile
 from bisect import bisect_right
 from collections import OrderedDict, deque
 from datetime import datetime
@@ -67,9 +68,6 @@ AUDIT_ROTATE_BYTES = 2 * 1024 * 1024  # 2MB → 改名为 .1（覆盖旧的）
 HOST = os.environ.get("READER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("READER_PORT", "8831"))
 MAX_BODY = 64 * 1024 * 1024  # 单次上传上限 64MB
-MAX_EPUB_UNCOMPRESSED = 128 * 1024 * 1024
-MAX_EPUB_MEMBER = 32 * 1024 * 1024
-MAX_EPUB_FILES = 4096
 
 # 可选 token 鉴权：设了 READER_TOKEN 才启用；启用后所有 /api/* 必须带 token。
 # 接受 ?token=xxx 或请求头 X-Token: xxx。比对用 hmac.compare_digest 防时序攻击。
@@ -77,6 +75,7 @@ TOKEN = os.environ.get("READER_TOKEN", "").strip()
 CLOUD = os.environ.get("READER_CLOUD", "0") == "1"
 
 _lock = threading.Lock()
+_conversion_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------- 基础工具
@@ -419,7 +418,7 @@ def safe_name(name: str):
     return name
 
 
-def prepare_import(filename: str, raw: bytes):
+def prepare_import(filename: str, raw: bytes, include_navigation=False):
     """按内容校验 TXT/EPUB，统一返回 UTF-8 书库名与正文；失败不写入。"""
     base, ext = os.path.splitext(os.path.basename(filename or ""))
     if ext.lower() not in (".txt", ".epub"):
@@ -434,19 +433,23 @@ def prepare_import(filename: str, raw: bytes):
         raise ValueError("文件内容不是 EPUB，请检查格式")
     if ext.lower() == ".txt" and is_zip:
         raise ValueError("文件内容是压缩包，请使用 EPUB 扩展名")
+    navigation = None
     if is_zip:
         try:
-            with zipfile.ZipFile(io.BytesIO(raw)) as zf:
-                items = zf.infolist()
-                if (len(items) > MAX_EPUB_FILES
-                        or any(item.file_size > MAX_EPUB_MEMBER for item in items)
-                        or sum(item.file_size for item in items) > MAX_EPUB_UNCOMPRESSED):
-                    raise ValueError("EPUB 解压后过大，无法安全导入")
-                if "META-INF/container.xml" not in zf.namelist():
-                    raise ValueError("文件内容不是有效的 EPUB")
-            from tools.epub2txt import extract_text
-            _title, lines = extract_text(io.BytesIO(raw))
-            text = norm_text("\n".join(lines))
+            if len(raw)>12*1024*1024:raise ValueError('EPUB压缩包上限12MB')
+            with tempfile.TemporaryDirectory(prefix='reader-epub-') as directory:
+                source=os.path.join(directory,'input.epub');output=os.path.join(directory,'result.json')
+                with open(source,'wb') as stream:stream.write(raw)
+                process=subprocess.run([sys.executable,os.path.join(BASE,'tools','epub_navigation.py'),
+                    '--input',source,'--output',output],capture_output=True,text=True,encoding='utf-8',timeout=25,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
+                if process.returncode!=0:
+                    detail=process.stderr.strip()
+                    raise ValueError(detail if detail and len(detail)<250 and 'Traceback' not in detail else 'EPUB转换超时或资源不足，未导入任何正文')
+                with open(output,encoding='utf-8') as stream:navigation=json.load(stream)
+                text=navigation.pop('text')
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError('EPUB转换超过25秒，已终止；未导入任何正文') from exc
         except ValueError:
             raise
         except Exception as exc:
@@ -462,7 +465,8 @@ def prepare_import(filename: str, raw: bytes):
         raise ValueError("文件包含非文本内容，请检查格式或编码")
     if len(text) > MAX_BODY or len(text.encode("utf-8")) > MAX_BODY:
         raise ValueError("转换后的正文超过 64 MB")
-    return name, text, source_format, encoding
+    result = (name, text, source_format, encoding)
+    return result + (navigation,) if include_navigation else result
 
 
 def book_path(name: str) -> str:
@@ -1147,6 +1151,10 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                 return self._api_kindle_sessions()
             if path == "/api/book":
                 return self._api_book()
+            if path == "/api/navigation":
+                return self._api_navigation()
+            if path == "/api/book/search":
+                return self._api_book_search()
             if path == "/api/progress":
                 pr = load_progress()
                 who_raw = (self._query().get("who") or [""])[0]
@@ -1365,11 +1373,106 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                   if isinstance(value, dict)}
         # 默认返 user；都没有就给空
         prog = by_who.get("user") if isinstance(by_who.get("user"), dict) else {}
+        window = {}
+        structure = public_index(index_for_text(text, book_revision))
+        if (self._query().get('window') or [''])[0] == '1':
+            from navigation import reading_window
+            total = len(text.encode('utf-16-le')) // 2
+            viewer = resolve_who(None, self._who_token()) or 'user'
+            own = by_who.get(viewer) or {}
+            supplied = (self._query().get('offset') or [''])[0]
+            try:
+                safe_resume=own.get('location_status') in ('ok','legacy_anchor_verified')
+                offset = int(supplied) if supplied else int(own.get('offset') or 0) if safe_resume else 0
+            except (ValueError,TypeError):
+                if supplied:return self._err('offset 必须为有效 UTF-16 偏移')
+                offset=0
+            if not 0 <= offset <= total or text_position(text, offset) is None:
+                if supplied:return self._err('offset 越界或位于emoji中间')
+                offset=0
+            if total > 128000:
+                window = reading_window(text,offset)
+                start,end = window['window_start'],window['window_end']
+                before = [h for h in structure['headings'] if h['start']<=start]
+                structure['headings'] = before[-1:] + [h for h in structure['headings'] if start<h['start']<end]
+                structure['toc_regions'] = [r for r in structure['toc_regions'] if r['start']<end and r['end']>start]
+            else:
+                window = dict(text_base=0,total_units=total,windowed=False)
         return self._json({"ok": True, "name": name, "text": text,
                            "book_revision": book_revision,
                            "chars": len(text), "progress": prog,
                            "by_who": by_who,
-                           "chapter_index": public_index(index_for_text(text, book_revision))})
+                           "chapter_index": structure, **window})
+
+    def _api_navigation(self):
+        from navigation import get,metadata_path,validate,preview_digest,SCHEMA
+        query=self._query()
+        if self.command=='GET':
+            name=(query.get('name') or [''])[0]
+        else:
+            if self._kindle_cookie_only() or (CLOUD and resolve_who(None,self._who_token())!='user'):
+                return self._err('目录修正仅限主人',403)
+            if int(self.headers.get('Content-Length') or 0)>8*1024*1024:
+                self.close_connection=True
+                return self._err('目录JSON上限8MB',413)
+            try:
+                data=json.loads(self._body().decode('utf-8-sig'))
+                if not isinstance(data,dict):raise ValueError()
+            except (ValueError,TypeError):return self._err('请提交有效目录JSON')
+            name=data.get('name')
+        if not isinstance(name,str) or safe_name(name)!=name:return self._err('完整书名不合法')
+        path=book_path(name)
+        if not os.path.isfile(path) or os.path.islink(path):return self._err('书库里没有这本书',404)
+        # Same lock as book imports/deletions; stale content/revision never overwrites metadata.
+        with _lock:
+            text,revision=book_snapshot(path)
+            current=get(DATA_DIR,name,text,revision)
+            if self.command=='GET':
+                # Lazily persist only this book's navigation. No full-library scan or resident cache.
+                cache=metadata_path(DATA_DIR,name)
+                if current.get('source')=='automatic' and not cache.exists():
+                    cache.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+                    dump_json(str(cache),dict(current,name=name))
+                try:
+                    offset=max(0,int((query.get('offset') or ['0'])[0]))
+                    limit=int((query.get('limit') or ['200'])[0])
+                    if not 1<=limit<=500:raise ValueError()
+                except ValueError:return self._err('offset>=0，limit为1至500')
+                items=current['items']
+                return self._json(dict(current,ok=True,name=name,items=items[offset:offset+limit],total=len(items),
+                    next_offset=offset+limit if offset+limit<len(items) else None,offset_unit='utf16',
+                    can_edit=not self._kindle_cookie_only() and (not CLOUD or resolve_who(None,self._who_token())=='user')))
+            if data.get('book_revision')!=revision:return self._err('正文版本已变化，请重新检查目录',409)
+            expected=data.get('expected_revision')
+            if type(expected) is not int or expected!=current.get('revision',0):return self._err('目录已变化，请重新导出后修改',409)
+            try:items=validate(data.get('items'),text)
+            except ValueError as exc:return self._err(str(exc))
+            digest=preview_digest(name,revision,expected,items)
+            if data.get('dry_run') is True:
+                return self._json(dict(ok=True,name=name,items=items,total=len(items),preview_digest=digest,
+                    book_revision=revision,expected_revision=expected,previous_total=len(current['items'])))
+            if data.get('confirm_digest')!=digest:return self._err('请先预览相同目录，再明确确认保存',428)
+            target=metadata_path(DATA_DIR,name);target.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+            if target.exists():
+                backup=target.with_name(target.name+'.revision-'+str(expected)+'.bak')
+                if not backup.exists():atomic_write(str(backup),target.read_text(encoding='utf-8'))
+            value=dict(schema_version=SCHEMA,name=name,book_revision=revision,revision=expected+1,
+                       source='manual',items=items,updated=now_iso(),updated_by=resolve_who(None,self._who_token()) or 'user')
+            dump_json(str(target),value)
+        audit(resolve_who(None,self._who_token()),_audit_token_hint(self._who_token()),self._client_ip(),'POST /api/navigation',name)
+        return self._json(dict(ok=True,name=name,revision=expected+1,total=len(items)))
+
+    def _api_book_search(self):
+        query=self._query();name=(query.get('name') or [''])[0];needle=(query.get('q') or [''])[0]
+        if safe_name(name)!=name or not 1<=len(needle)<=200:return self._err('书名或搜索词无效')
+        if not os.path.isfile(book_path(name)):return self._err('书库里没有这本书',404)
+        text,revision=book_snapshot(book_path(name));pattern=re.compile(re.escape(needle),re.I)
+        hits=[];last=units=0
+        for match in pattern.finditer(text):
+            index=match.start();units+=len(text[last:index].encode('utf-16-le'))//2;last=index
+            hits.append(dict(offset=units,pre=text[max(0,index-18):index],hit=match.group(),post=text[match.end():match.end()+28]))
+            if len(hits)>=800:break
+        return self._json(dict(ok=True,name=name,book_revision=revision,hits=hits,truncated=len(hits)==800))
 
     def _api_reading_progress(self):
         q = self._query()
@@ -1481,6 +1584,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                 return self._api_import()
             if path == "/api/books/category":
                 return self._api_book_category()
+            if path == "/api/navigation":
+                return self._api_navigation()
             if path == "/api/progress":
                 return self._api_progress()
             if path == "/api/delete":
@@ -1498,6 +1603,13 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             return self._err("服务端出错：%s" % e, 500)
 
     def _api_import(self):
+        if not _conversion_lock.acquire(blocking=False):
+            self.close_connection=True
+            return self._err('已有书籍正在导入，请稍后重试',409)
+        try:return self._api_import_single()
+        finally:_conversion_lock.release()
+
+    def _api_import_single(self):
         if self._kindle_cookie_only():
             return self._err("Kindle 设备不能导入书籍", 403)
         if CLOUD and resolve_who(None, self._who_token()) != "user":
@@ -1509,7 +1621,10 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         if category not in CATEGORY_IDS or (supplied and len(supplied) != 1):
             return self._err("请选择有效的所属分类")
         try:
-            name, text, source_format, encoding = prepare_import(filename, self._body())
+            if filename.lower().endswith('.epub') and int(self.headers.get('Content-Length') or 0)>12*1024*1024:
+                self.close_connection=True
+                return self._err('EPUB压缩包上限12MB',413)
+            name, text, source_format, encoding, navigation = prepare_import(filename, self._body(),True)
         except ValueError as exc:
             return self._err(str(exc))
         if CLOUD and name == REFERENCE_BOOK_NAME:
@@ -1518,7 +1633,19 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             if os.path.exists(book_path(name)):
                 return self._err("书库已有同名书籍；请改名后再上传，避免覆盖现有阅读记录", 409)
             atomic_write(book_path(name), text)
+            navigation_path = None
+            created_navigation = False
             try:
+                if navigation is not None:
+                    from navigation import metadata_path,validate,SCHEMA
+                    navigation_path = metadata_path(DATA_DIR,name)
+                    navigation_path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+                    if navigation_path.exists():raise ValueError('存在同名历史目录，请管理员检查后再导入')
+                    items = validate(navigation['items'],text)
+                    value = dict(schema_version=SCHEMA,name=name,book_revision=navigation['book_revision'],
+                        revision=1,source='epub',items=items,updated=now_iso(),warnings=navigation['warnings'])
+                    dump_json(str(navigation_path),value)
+                    created_navigation = True
                 lib = load_library()
                 entry = book_entry(name, text=text)
                 assign_book_category(entry, category, source="manual" if supplied else "default",
@@ -1528,11 +1655,15 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                 dump_json(LIBRARY_FILE, lib)
             except Exception:
                 os.remove(book_path(name))  # Only this newly created file; never an existing book.
+                if created_navigation and navigation_path is not None and navigation_path.exists():
+                    navigation_path.unlink()
                 raise
         audit(resolve_who(None, self._who_token()), _audit_token_hint(self._who_token()),
               self._client_ip(), "POST /api/import", name)
         return self._json({"ok": True, "name": name, "chars": len(text),
                            "source_format": source_format, "encoding": encoding,
+                           "navigation_items": len(navigation['items']) if navigation else None,
+                           "warnings": navigation['warnings'] if navigation else [],
                            "category": category, "overwrote": False})
 
     def _api_book_category(self):
@@ -1578,6 +1709,12 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         if not os.path.isfile(p):
             return self._err("书库里没有这本书", 404)
         with _lock:
+            from navigation import metadata_path
+            navigation = metadata_path(DATA_DIR,name)
+            if navigation.exists():
+                deleted = navigation.parent / 'deleted'
+                deleted.mkdir(mode=0o700,parents=True,exist_ok=True)
+                os.replace(navigation,deleted / (navigation.stem+'-'+secrets.token_hex(6)+'.json'))
             os.remove(p)
             lib = load_library()
             lib.get("books", {}).pop(name, None)
