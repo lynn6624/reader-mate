@@ -809,9 +809,12 @@ const esc = s => s.replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",
 const CHAP_RE = /^(第\s*[0-9零一二三四五六七八九十百千万两]+\s*[章节回卷篇幕]|Chapter\s+\d+|CHAPTER\s+\d+)[^\n]{0,40}$/;
 const LONG_SEG = 1200;
 
-function splitSegments(text){
+function splitSegments(text, structure){
   const segs = [];
   let pos = 0, chap = "";
+  const indexed = structure && Array.isArray(structure.headings) && Array.isArray(structure.toc_regions);
+  const headings = indexed ? structure.headings : [];
+  let headingCursor = 0;
   const lines = text.split("\n");
   for (const line of lines){
     const lineStart = pos;
@@ -819,7 +822,14 @@ function splitSegments(text){
     const t = line.trim();
     if (!t) continue;
     const lead = line.length - line.trimStart().length;
-    if (CHAP_RE.test(t)) chap = t.slice(0, 40);
+    if (indexed){
+      while (headingCursor < headings.length && headings[headingCursor].start <= lineStart + lead){
+        chap = headings[headingCursor++].title;
+      }
+      const toc = structure.toc_regions.some(r => r.start <= lineStart + lead && lineStart + lead < r.end);
+      if (toc) chap = "目录";
+      else if (!headingCursor) chap = "";
+    } else if (CHAP_RE.test(t)) chap = t.slice(0, 40); // Legacy server without an index.
     if (t.length > LONG_SEG){
       for (let i = 0; i < t.length; i += LONG_SEG){
         segs.push({
@@ -1792,7 +1802,7 @@ async function openBook(name){
   state.book = Object.assign({}, j, { progress: prog, chars: j.text.length });
   saveBlocked = false;
   setTemporaryView(false);
-  state.segs = splitSegments(j.text);
+  state.segs = splitSegments(j.text, j.chapter_index);
   state.els = []; state.rendered = 0; state.currentSeg = 0;
   reader.innerHTML = "";
   $("#bkTitle").textContent = j.name.replace(/\.txt$/i, "");
