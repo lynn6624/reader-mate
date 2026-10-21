@@ -52,7 +52,7 @@ def synthetic():
 def integration(text, expected, index):
     with tempfile.TemporaryDirectory() as directory:
         base = Path(directory)
-        for name in ('reader_server.py','chapter_index.py'):
+        for name in ('reader_server.py','chapter_index.py','progress_catalog.py'):
             shutil.copy(ROOT/name, base/name)
         shutil.copytree(ROOT/'web',base/'web')
         shutil.copytree(ROOT/'tools',base/'tools')

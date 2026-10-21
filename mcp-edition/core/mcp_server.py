@@ -106,8 +106,9 @@ async def list_books(ctx: Context, category: Literal["", "literature", "web-fict
     """List shared books and six categories/counts. Omit category for all; pass a returned category ID to filter.
 
     Call get_calling_guide first if the workflow is unfamiliar. Category IDs never change book names/positions.
+    Progress belongs to authenticated viewer_id (scope=self); unverified/missing saves use null, never another reader.
     """
-    return await api(ctx, "/api/books?" + urllib.parse.urlencode({"category": category}))
+    return await api(ctx, "/api/books?" + urllib.parse.urlencode({"category": category, "progress_scope":"self"}))
 
 @mcp.tool()
 async def read_book(name: str, ctx: Context, offset: int = 0, length: int = 3000) -> dict:
@@ -140,10 +141,18 @@ async def get_reading_progress(name: str, ctx: Context, reader_id: str = "") -> 
         "name": name, "reader_id": reader_id}))
 
 @mcp.tool()
-async def list_reading_progress(name: str, ctx: Context) -> dict:
-    """List authenticated co-readers' saved positions for one book; no reading time is inferred."""
-    return await api(ctx, "/api/reading-progress?" + urllib.parse.urlencode({
-        "name": name, "all": "1"}))
+async def list_reading_progress(ctx: Context, name: str = "", reader_id: str = "") -> dict:
+    """With name: existing per-book co-reader positions. Omit name: resume saved books.
+
+    Cross-book defaults to your authenticated identity (latest 20, no pagination).
+    Another reader returns only their latest valid save. Target user excludes <1%
+    before choosing the latest. Legacy revision=0 may be valid; queries never save.
+    Times include +08:00 (Asia/Shanghai). No limit/page/threshold bypass parameters.
+    """
+    if name:
+        return await api(ctx, "/api/reading-progress?" + urllib.parse.urlencode({
+            "name": name, "all": "1"}))
+    return await api(ctx, "/api/reading-progress/resume?" + urllib.parse.urlencode({"reader_id":reader_id}))
 
 @mcp.tool()
 async def list_comments(name: str, ctx: Context, chapter_id: str = "",

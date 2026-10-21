@@ -32,6 +32,7 @@ from email.utils import formatdate
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from html import escape as html_escape
 from http.cookies import SimpleCookie
+from progress_catalog import TIME_ZONE, time_key, verified_position
 from chapter_index import (INDEX_VERSION as CHAPTER_INDEX_VERSION,
                            index_for_text, chapter_at as indexed_chapter_at, public_index)
 
@@ -1163,6 +1164,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                 return self._api_reading_progress()
             if path == "/api/reading-progress/latest":
                 return self._api_latest_reading_progress()
+            if path == "/api/reading-progress/resume":
+                return self._api_resume_reading_progress()
             if path == "/api/notes":
                 return self._api_notes()
             if path == "/api/notes/annotations":
@@ -1257,6 +1260,12 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         category = (self._query().get("category") or [""])[0]
         if category and category not in CATEGORY_IDS:
             return self._err("所属分类无效")
+        progress_scope = (self._query().get("progress_scope") or [""])[0]
+        if progress_scope not in ("", "self"):
+            return self._err("progress_scope 不合法")
+        viewer = resolve_who(None, self._who_token()) if progress_scope else None
+        if progress_scope and not viewer:
+            return self._err("身份令牌不对", 403)
         lib = scan_books()
         pr = load_progress()
         books = []
@@ -1272,6 +1281,20 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             p = p or {}
             b = dict(b)
             b["read_only"] = CLOUD and name == REFERENCE_BOOK_NAME
+            if progress_scope:
+                own = by_who.get(viewer)
+                entry = None
+                if isinstance(own, dict) and 'offset' in own:
+                    text, revision = book_snapshot(book_path(name))
+                    entry = verified_position(own, text, revision, text_position,
+                        lambda record, content, version: progress_view(record, viewer, content, version))
+                b.update(reader_id=viewer, offset=entry['offset'] if entry else None,
+                         percent=entry['percent'] if entry else None,
+                         chapter=entry['chapter'] if entry else '',
+                         read_at=entry['last_read_at'] if entry else None,
+                         location_status=entry['location_status'] if entry else 'no_verified_save')
+                books.append(b)
+                continue
             b["offset"] = p.get("offset", 0)
             b["percent"] = p.get("percent", 0)
             b["chapter"] = p.get("chapter", "")
@@ -1286,7 +1309,47 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             not CLOUD or resolve_who(None, self._who_token()) == "user")
         return self._json({"ok": True, "books": books, "categories": categories,
                            "can_manage": can_manage, "total": len(lib), "dir": BOOKS_DIR,
+                           **({"viewer_id":viewer, "progress_scope":"self", "time_zone":TIME_ZONE} if progress_scope else {}),
                            "updated": load_library().get("updated")})
+
+    def _api_resume_reading_progress(self):
+        """MCP cross-book lookup in the existing authenticated shared bookshelf."""
+        viewer = resolve_who(None, self._who_token())
+        if not viewer:
+            return self._err("身份令牌不对", 403)
+        query = self._query()
+        if set(query) - {"reader_id"} or any(len(values) != 1 for values in query.values()):
+            return self._err("跨书查询只接受 reader_id，不支持 limit 或翻页参数")
+        target = (query.get("reader_id") or [""])[0] or viewer
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", target):
+            return self._err("reader_id 不合法")
+        maximum = 20 if target == viewer else 1
+        candidates = []
+        for name, by_who in (load_progress().get("books") or {}).items():
+            if not isinstance(name, str) or safe_name(name) != name or not isinstance(by_who, dict):
+                continue
+            record = by_who.get(target)
+            if isinstance(record, dict) and 'offset' in record:
+                candidates.append((time_key(record.get('updated')), name, record))
+        library = (load_library().get('books') or {})
+        entries = []
+        for _, name, record in sorted(candidates, key=lambda item:(item[0],item[1]), reverse=True):
+            path = book_path(name)
+            if not os.path.isfile(path) or os.path.islink(path):
+                continue
+            text, revision = book_snapshot(path)
+            entry = verified_position(record, text, revision, text_position,
+                lambda value, content, version: progress_view(value, target, content, version))
+            if entry is None or (target == "user" and entry['percent'] < .01):
+                continue
+            metadata = library.get(name) or {}
+            entries.append(dict(entry, name=name, title=metadata.get('title') or name,
+                                category=metadata.get('category') if metadata.get('category') in CATEGORY_IDS else DEFAULT_CATEGORY))
+            if len(entries) == maximum:
+                break
+        return self._json({"ok":True, "mode":"cross_book", "viewer_id":viewer,
+                           "reader_id":target, "entries":entries, "max_entries":maximum,
+                           "time_zone":TIME_ZONE, "offset_unit":"utf16"})
 
     def _api_book(self):
         name = safe_name((self._query().get("name") or [""])[0])

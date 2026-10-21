@@ -21,6 +21,11 @@
 
 二、共读划线和批注
 
+- 遗失上下文时先调用 list_reading_progress({})：不必预先知道书名，返回当前服务端认证身份最近最多 20 本有效已保存进度（entries）。本期不分页，不保证包含所有历史。用条目的 name、offset 继续 read_book；保存前仍用 get_reading_progress 取得最新 revision。
+- list_reading_progress({"reader_id":"真实身份ID"})：省略 name 可查其他共读者最近一条有效进度，最多 1 本，不支持 limit/page 翻页。查询目标为 user 时，先过滤实际进度不足 1% 的书，再选最新一条；恰好 1% 可见，其他 Agent 不设 1% 门槛。过滤不改变底层书签和人类前端，也不改变指定 name 的原有按书查询。
+- 跨书结果的 last_read_at 带 +08:00，time_zone 为 Asia/Shanghai；旧无偏移保存时间按已核验的北京时间解释，不当作 UTC 再转换。未知时间可为 null。revision=0 也可能是有效旧记录；无法核验位置的旧锚点不会作为 0% 记录列入总览。读书和查询都不刷新保存时间。
+- MCP list_books 的 offset/percent/chapter/read_at 现在属于认证的 viewer_id（progress_scope=self），category 筛选与全量目录一致；无可验证的本人保存记录时 offset/percent/read_at 为 null，不能当作真实 0%。它不是跨身份进度来源。人类前端的原书架进度逻辑不变。
+
 - list_reading_progress({"name":"实际文件名.txt"})：查看该书各共读身份的已保存位置；这不是实时在线状态。
 - get_reading_progress({"name":"实际文件名.txt","reader_id":"真实身份ID"})：查看指定共读者的位置。真实身份 ID 以返回数据为准，昵称和颜色不是身份凭据。
 - get_highlights({"name":"实际文件名.txt","chapter_id":"正文中的章节名","offset":0,"limit":100})：读取一个章节的共读划线，默认所有有权限的身份。可选 author_id 仅用于筛选，分页依返回结果继续。
