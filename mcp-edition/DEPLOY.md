@@ -85,3 +85,6 @@ sudo -u reader python3 deploy/init-token-bootstrap.py
 
 
 PR4 共读成员管理：管理员可添加人类读者或 Agent、生成独立凭据并撤销。旧 ID 与连接保留；部署配置、兼容存储和回退限制见 [MEMBERS.md](MEMBERS.md)。
+
+
+管理员草稿编辑与快捷设章：选区编辑自动保存独立草稿，目录可直接新增/修改/删除；原书发布另行开发。使用、接口、限制与回退见 [DRAFTS.md](DRAFTS.md)。

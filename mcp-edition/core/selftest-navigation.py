@@ -109,7 +109,7 @@ def unit_tests():
 def integration(browser=True):
     with tempfile.TemporaryDirectory() as directory:
         base=Path(directory)
-        for n in ('reader_server.py', 'member_store.py','chapter_index.py','progress_catalog.py','navigation.py'):shutil.copy(ROOT/n,base/n)
+        for n in ('reader_server.py', 'member_store.py','book_drafts.py','chapter_index.py','progress_catalog.py','navigation.py'):shutil.copy(ROOT/n,base/n)
         shutil.copytree(ROOT/'web',base/'web');shutil.copytree(ROOT/'tools',base/'tools')
         (base/'data').mkdir();(base/'书库').mkdir()
         (base/'data/identities.json').write_text(json.dumps({'user':'owner','004':'peer'}))

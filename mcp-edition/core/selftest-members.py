@@ -116,7 +116,7 @@ def browser(web, portal, token, ident):
 async def integration():
     with tempfile.TemporaryDirectory() as directory:
         base=Path(directory);core=base/'core';core.mkdir();data=core/'data';data.mkdir();(core/'书库').mkdir()
-        for name in ('reader_server.py','member_store.py','chapter_index.py','progress_catalog.py','navigation.py','mcp_server.py','MCP工具标准调用参考_只读.txt'):
+        for name in ('reader_server.py','member_store.py','book_drafts.py','chapter_index.py','progress_catalog.py','navigation.py','mcp_server.py','MCP工具标准调用参考_只读.txt'):
             shutil.copy(ROOT/name,core/name)
         shutil.copytree(ROOT/'web',core/'web');portal=base/'token-mcp';portal.mkdir()
         for name in ('server.py','index.html'):shutil.copy(PORTAL/name,portal/name)

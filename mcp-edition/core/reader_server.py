@@ -1280,6 +1280,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                 return self._api_kindle_sessions()
             if path == "/api/book":
                 return self._api_book()
+            if path in ("/api/draft", "/api/draft/navigation", "/api/draft/start", "/api/draft/edit", "/api/draft/chapter", "/api/chapter"):
+                return self._api_draft()
             if path == "/api/navigation":
                 return self._api_navigation()
             if path == "/api/book/search":
@@ -1380,6 +1382,10 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                 body = f.read()
         except FileNotFoundError:
             return self._err("找不到页面文件 web/reader.html", 500)
+        if b'/* DRAFT_EDITOR_JS */' in body:
+            try:
+                with open(os.path.join(BASE,'web','editor.js'),'rb') as f:body=body.replace(b'/* DRAFT_EDITOR_JS */',f.read())
+            except OSError:return self._err('找不到草稿界面脚本 web/editor.js',500)
         if KINDLE_INSTALLED:
             body = kindle_extension.decorate_page(body)
         if self._kindle_cookie_only():
@@ -1555,7 +1561,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         path=book_path(name)
         if not os.path.isfile(path) or os.path.islink(path):return self._err('书库里没有这本书',404)
         # Same lock as book imports/deletions; stale content/revision never overwrites metadata.
-        with _lock:
+        from book_drafts import navigation_guard
+        with _lock, navigation_guard(DATA_DIR,name):
             text,revision=book_snapshot(path)
             current=get(DATA_DIR,name,text,revision)
             if self.command=='GET':
@@ -1592,6 +1599,105 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             dump_json(str(target),value)
         audit(resolve_who(None,self._who_token()),_audit_token_hint(self._who_token()),self._client_ip(),'POST /api/navigation',name)
         return self._json(dict(ok=True,name=name,revision=expected+1,total=len(items)))
+
+    def _api_quick_chapter(self,name,data,path):
+        import book_drafts as drafts
+        import navigation as nav
+        with _lock, drafts.navigation_guard(DATA_DIR,name):
+            text,revision=book_snapshot(path)
+            current=nav.get(DATA_DIR,name,text,revision)
+            if current.get('status') in ('invalid_metadata','content_changed'):raise drafts.DraftError('请先检查原目录元数据')
+            if data.get('book_revision')!=revision or type(data.get('expected_revision')) is not int or data['expected_revision']!=current.get('revision',0):
+                raise drafts.DraftError('目录或原书已变化，请重新打开目录核对')
+            rows=drafts.change_chapter(current['items'],text,data)
+            dst=nav.metadata_path(DATA_DIR,name)
+            if dst.exists():
+                backup=dst.with_name(dst.name+'.revision-'+str(current.get('revision',0))+'.bak')
+                if not backup.exists():atomic_write(str(backup),dst.read_text(encoding='utf8'))
+            if file_revision(path)!=revision:raise drafts.DraftError('原书发生变化，未保存目录')
+            value=dict(schema_version=nav.SCHEMA,name=name,book_revision=revision,revision=current.get('revision',0)+1,
+                source='manual',items=rows,updated=now_iso(),updated_by='user')
+            dump_json(str(dst),value)
+        audit('user',_audit_token_hint(self._who_token()),self._client_ip(),'POST /api/chapter',name)
+        return self._json(dict(ok=True,name=name,revision=value['revision'],total=len(rows)))
+
+    def _api_draft(self):
+        import book_drafts as drafts
+        import navigation as nav
+        if self._kindle_cookie_only() or (CLOUD and resolve_who(None,self._who_token())!='user'):
+            return self._err('草稿编辑与快捷设章仅限管理员',403)
+        route=urllib.parse.urlparse(self.path).path
+        try:
+            query=self._query()
+            if self.command=='GET':
+                if route not in ('/api/draft','/api/draft/navigation'):return self._err('没有这个路径',404)
+                data={};name=(query.get('name') or [''])[0]
+            else:
+                if route not in ('/api/draft/start','/api/draft/edit','/api/draft/chapter','/api/chapter'):return self._err('没有这个路径',404)
+                if int(self.headers.get('Content-Length') or 0)>64*1024:
+                    self.close_connection=True;return self._err('编辑请求上限64KB',413)
+                data=json.loads(self._body().decode('utf-8'))
+                if not isinstance(data,dict):raise ValueError()
+                name=data.get('name')
+            if not isinstance(name,str) or safe_name(name)!=name:raise ValueError('完整书名无效')
+            if name==REFERENCE_BOOK_NAME:return self._err('调用参考为只读，不能编辑',403)
+            path=book_path(name)
+            if not os.path.isfile(path) or os.path.islink(path):return self._err('书库里没有这本书',404)
+            if route=='/api/chapter':return self._api_quick_chapter(name,data,path)
+            # Lock covers full RMW and imports/deletions. No formal reading store is written.
+            target=drafts.path_for(DATA_DIR,name);target.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+            with _lock, member_store.locked(str(target)):
+                if route!='/api/chapter' and os.path.getsize(path)>drafts.MAX_SOURCE_BYTES:
+                    return self._err('本阶段草稿原文件上限8MB，此书超过限制',413)
+                text,revision=book_snapshot(path)
+                if drafts.units(text)>drafts.MAX_UNITS:return self._err('本阶段草稿最多200万 UTF-16 单位',413)
+                value,draft=drafts.load(DATA_DIR,name,text,revision)
+                if route=='/api/draft/start':
+                    if data.get('book_revision')!=revision:raise drafts.DraftError('原书版本已变化，请重新打开')
+                    if value is None:
+                        with drafts.navigation_guard(DATA_DIR,name):table=nav.get(DATA_DIR,name,text,revision)
+                        value=drafts.create(name,text,revision,table)
+                        if file_revision(path)!=revision:raise drafts.DraftError('原书已变化，未建立草稿')
+                        drafts.save(DATA_DIR,name,value)
+                if value is None:return self._err('尚无草稿，请先进入草稿模式',404)
+                duplicate=False
+                if route=='/api/draft/edit':
+                    value,draft,duplicate=drafts.edit(value,draft,data)
+                    if not duplicate:
+                        if file_revision(path)!=revision:raise drafts.DraftError('原书已变化，未保存编辑')
+                        drafts.save(DATA_DIR,name,value)
+                if route=='/api/draft/chapter':
+                    drafts.check_version(value,data)
+                    issue_id=data.get('resolve_issue_id')
+                    if issue_id:
+                        issue=next((i for i in value['chapter_issues'] if i['item']['id']==issue_id),None)
+                        if not issue:raise drafts.DraftError('待核对目录项已变化')
+                        value['items'].append(issue['item']);data=dict(data,id=issue_id)
+                        value['chapter_issues'].remove(issue)
+                    value['items']=drafts.change_chapter(value['items'],draft,data)
+                    value.update(revision=value['revision']+1,updated=drafts.stamp())
+                    if file_revision(path)!=revision:raise drafts.DraftError('原书已变化，未保存目录')
+                    drafts.save(DATA_DIR,name,value)
+                if route=='/api/draft/navigation':
+                    offset=int((query.get('offset') or ['0'])[0]);limit=int((query.get('limit') or ['200'])[0])
+                    if offset<0 or not 1<=limit<=500:raise ValueError('目录分页参数无效')
+                    return self._json(dict(ok=True,name=name,revision=value['revision'],book_revision=revision,
+                        items=value['items'][offset:offset+limit],total=len(value['items']),can_edit=True,source='draft',
+                        status='ok' if value['items'] else 'no_reliable_headings',next_offset=offset+limit if offset+limit<len(value['items']) else None,
+                        chapter_issues=value['chapter_issues'],offset_unit='utf16'))
+                offset=int((query.get('offset') or [str(value.get('cursor_offset',0))])[0]) if self.command=='GET' else int(data.get('view_offset',value.get('cursor_offset',0)))
+                total=drafts.units(draft);offset=max(0,min(offset,total))
+                structure=public_index(index_for_text(draft,'draft-'+revision+'-'+str(value['revision'])))
+                window=nav.reading_window(draft,offset);start,end=window['window_start'],window['window_end']
+                before=[h for h in structure['headings'] if h['start']<=start]
+                structure['headings']=before[-1:]+[h for h in structure['headings'] if start<h['start']<end]
+                structure['toc_regions']=[r for r in structure['toc_regions'] if r['start']<end and r['end']>start]
+                result=dict(ok=True,name=name,book_revision=revision,draft_revision=value['revision'],isDraft=True,
+                    edit_count=len(value['operations']),chapter_issues=value['chapter_issues'],cursor_offset=offset,chapter_index=structure,
+                    chars=total,already_applied=duplicate,**window)
+            return self._json(result)
+        except drafts.DraftError as exc:return self._err(str(exc),exc.status)
+        except (ValueError,TypeError,UnicodeError) as exc:return self._err(str(exc) or '编辑参数无效',400)
 
     def _api_book_search(self):
         query=self._query();name=(query.get('name') or [''])[0];needle=(query.get('q') or [''])[0]
@@ -1717,6 +1823,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                 return self._api_import()
             if path == "/api/books/category":
                 return self._api_book_category()
+            if path in ("/api/draft", "/api/draft/navigation", "/api/draft/start", "/api/draft/edit", "/api/draft/chapter", "/api/chapter"):
+                return self._api_draft()
             if path == "/api/navigation":
                 return self._api_navigation()
             if path == "/api/progress":
