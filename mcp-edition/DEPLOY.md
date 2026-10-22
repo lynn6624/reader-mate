@@ -79,3 +79,6 @@ sudo -u reader python3 deploy/init-token-bootstrap.py
 
 本版 `core/web/reader.html` 将选区朗读按句接续，修复长段落时只读第一句、跟随滚动不前进的问题。替换前备份原页面，运行 `python3 core/selftest-tts.py`（需要 Playwright 与 Chrome）及原有浏览器/云端测试。部署只需原子替换页面并刷新浏览器，不需要重启服务或迁移数据。回滚仅恢复此前备份的页面；保留书库、进度、批注与令牌。
 
+## notes兼容保护
+
+升级前先备份并运行隔离验收。该修复只替换代码，首个正常notes修改会在data/notes-backups保存一份私有原件；不要把它、notes.json.lock或任何生产数据上传Git。无批量迁移，原TXT与进度不改写。损坏存储会返回503并保留原文件，管理员应核查可信副本，不要初始化空库。回滚不能用旧notes覆盖新评论；升级后已有新notes时，旧有损规范化代码也须拒绝回退。保留user不可删除；当前云端缺少其配置仍会拒绝启动，恢复时核对私有备份及原凭据，不能关闭鉴权。详见 [PRESERVATION.md](PRESERVATION.md)。

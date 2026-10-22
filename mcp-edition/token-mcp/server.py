@@ -306,6 +306,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(403, {"ok": False, "error": "口令不对"})
             return
         name = path[len(prefix):]
+        if name == "user":
+            self._send(409, {"ok": False, "error": "user 是保留的系统身份，不能删除"})
+            return
         with WRITE_LOCK:
             ids = load_identities()
             if name not in ids:
@@ -333,4 +336,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

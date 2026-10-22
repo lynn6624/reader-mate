@@ -63,6 +63,14 @@ def main():
             assert request("POST", "/api/setup", {
                 "bootstrap": "bootstrap-for-test", "password": "another password",
             })[0] == 409
+            identities_file = data_dir / "identities.json"
+            identities_file.write_text(json.dumps({"user":"owner-test-credential"}), encoding="utf-8")
+            history_file = data_dir / "notes.json"
+            history_file.write_text('{"retained_history":true}', encoding="utf-8")
+            before = identities_file.read_bytes()
+            assert request("DELETE", "/api/identities/user", {"password":"wrong password"})[0] == 403
+            assert request("DELETE", "/api/identities/user", {"password":"correct horse battery"})[0] == 409
+            assert identities_file.read_bytes() == before
             assert request("POST", "/api/identities", {
                 "name": "test004", "password": "wrong password",
             })[0] == 403
@@ -78,6 +86,10 @@ def main():
             assert request("POST", "/api/identities", {
                 "name": "中文", "password": "correct horse battery",
             })[0] == 400
+            assert request("DELETE", "/api/identities/test004", {"password":"wrong password"})[0] == 403
+            assert request("DELETE", "/api/identities/test004", {"password":"correct horse battery"})[0] == 200
+            assert history_file.read_text(encoding="utf-8") == '{"retained_history":true}'
+            assert json.loads(identities_file.read_bytes())["user"] == "owner-test-credential"
             key_file.unlink()
             assert request("POST", "/api/identities", {
                 "name": "test005", "password": "correct horse battery",

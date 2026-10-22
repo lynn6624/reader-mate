@@ -2556,7 +2556,13 @@ async function loadHighlights(name){
       const since = offset === 0 && notesCache.revision ?
         "&since=" + encodeURIComponent(notesCache.revision) : "";
       const r = await fetchAuth("/api/notes?name=" + encodeURIComponent(name) + "&offset=" + offset + "&limit=200" + since);
-      if (!r.ok) return;
+      if (!r.ok){
+        if (r.status === 503){
+          const error = await r.json();
+          showErr(error.error || "批注存储异常，原数据已保留，请联系管理员", "notes");
+        }
+        return;
+      }
       j = await r.json();
       if (j.not_modified){
         if (state.viewerId === j.viewer_id) return;
@@ -2570,6 +2576,8 @@ async function loadHighlights(name){
     } while (offset !== null && offset !== undefined);
     // 拉回时用户可能已经切到别的书——只接受当前书的
     if (!state.book || state.book.name !== name){ return; }
+    const notesError = document.getElementById("errbar");
+    if (notesError && notesError.dataset.kind === "notes") notesError.remove();
     if (consistent && firstRevision && notesCache.revision === firstRevision &&
         state.viewerId === j.viewer_id) return;
     state.viewerId = j.viewer_id || state.who || "user";
@@ -2596,7 +2604,10 @@ function highlightColor(author){
   return otherHlColors[n % otherHlColors.length];
 }
 function readerLabel(author){
-  return String(author || "历史身份");
+  return String(author || "历史作者未知");
+}
+function annotationAuthor(comment){
+  return comment.author_id || (comment.who === "user" ? "user" : comment.who === "ai" ? comment.name : comment.who) || null;
 }
 function progressReaderLabel(readerId){
   const alias = readerLabel(readerId);
@@ -2628,7 +2639,7 @@ function paintHighlightSegment(segIdx, hs){
     const parts = active.filter(h => h.start <= seg.start + a && h.end >= seg.start + b);
     const chunk = esc(seg.text.slice(a,b));
     if (!parts.length){ html += chunk; continue; }
-    const owners = [...new Set(parts.map(h => h.author_id || h.owner || "user"))];
+    const owners = [...new Set(parts.map(h => h.author_id || h.owner || null))];
     const mine = owners.includes(state.viewerId);
     const color = mine ? highlightColor(state.viewerId) :
                   owners.length > 1 ? "#e9e5dc" : highlightColor(owners[0]);
@@ -2671,7 +2682,7 @@ function openHlPanel(h, groupIds){
     for (const item of group){
       const b = document.createElement("button");
       b.classList.toggle("on", item.id === h.id);
-      b.textContent = readerLabel(item.author_id || item.owner || "user") +
+      b.textContent = readerLabel(item.author_id || item.owner || null) +
         " · 「" + (item.text || "").slice(0, 46) + "」 · " + (item.thread || []).length + " 条批注";
       b.addEventListener("click", () => openHlPanel(item, groupIds));
       choices.appendChild(b);
@@ -2688,9 +2699,9 @@ function openHlPanel(h, groupIds){
   $("#hlInput").value = "";
   updateHlWeight();
   $("#hlPanel").dataset.hlId = h.id;
-  $("#hlPanelTitle").textContent = readerLabel(h.author_id || h.owner || "user") +
+  $("#hlPanelTitle").textContent = readerLabel(h.author_id || h.owner || null) +
     " 的划线" + (h.chapter ? " · " + h.chapter : "");
-  $("#btnDelHighlight").style.display = (h.author_id || h.owner || "user") === state.viewerId ? "" : "none";
+  $("#btnDelHighlight").style.display = (h.author_id || h.owner || null) === state.viewerId ? "" : "none";
   $("#hlPanel").classList.add("on");
   if (thread.length >= 12){
     $("#hlInput").disabled = true;
@@ -2728,11 +2739,12 @@ async function delCurrentHighlight(){
   } catch (e){ toast("删除失败——后端多半掉了，重新打开阅读器再试", 4000); }
 }
 
-/* 改批注（按 thread 索引）：把那条 .cm 就地变成输入框 → 保存调 comment/edit。 */
+/* 改批注（优先按稳定批注 ID）：把那条 .cm 就地变成输入框 → 保存调 comment/edit。 */
 function startEditComment(cmEl, idx){
   const hid = $("#hlPanel").dataset.hlId;
   const h = notesCache.list.find(x => x.id === hid);
   if (!h || !h.thread || !h.thread[idx]) return;
+  const annotationId = h.thread[idx].annotation_id;
   const cur = h.thread[idx].text || "";
   cmEl.classList.add("editing");
   cmEl.innerHTML = "";
@@ -2780,11 +2792,12 @@ function startEditComment(cmEl, idx){
     try {
       const r = await fetchAuth("/api/notes/comment/edit", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: state.book.name, id: hid, index: idx, text }),
+        body: JSON.stringify({ name: state.book.name, id: hid, index: idx, annotation_id: annotationId, text }),
       });
       const j = await r.json();
       if (j.ok){
-        h.thread[idx].text = text;
+        const current = annotationId ? h.thread.find(c => c.annotation_id === annotationId) : h.thread[idx];
+        if (current) current.text = text;
         invalidateIndex();
         renderHlThread(h.thread);
         if (libTab === "idx") renderIndex();
@@ -2803,16 +2816,18 @@ async function delComment(idx){
   const hid = $("#hlPanel").dataset.hlId;
   const h = notesCache.list.find(x => x.id === hid);
   if (!h || !h.thread || !h.thread[idx]) return;
+  const annotationId = h.thread[idx].annotation_id;
   const cur = (h.thread[idx].text || "").slice(0, 30);
   if (!confirm("删掉这条批注？\n「" + cur + "…」")) return;
   try {
     const r = await fetchAuth("/api/notes/comment/delete", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: state.book.name, id: hid, index: idx }),
+      body: JSON.stringify({ name: state.book.name, id: hid, index: idx, annotation_id: annotationId }),
     });
     const j = await r.json();
     if (!j.ok){ toast(j.error || "删除失败"); return; }
-    h.thread.splice(idx, 1);
+    const currentIndex = annotationId ? h.thread.findIndex(c => c.annotation_id === annotationId) : idx;
+    if (currentIndex >= 0) h.thread.splice(currentIndex, 1);
     invalidateIndex();
     renderHlThread(h.thread);
     // 输入框重新启用（之前可能因满 12 条被锁）
@@ -2842,8 +2857,8 @@ function renderHlThread(thread){
     const c = thread[idx];
     const d = document.createElement("div");
     d.className = "cm";
-    const who = c.who || "user";
-    const author = c.author_id || (who === "ai" ? c.name : "user") || "user";
+    const who = c.who === "user" ? "user" : "ai";
+    const author = annotationAuthor(c);
     const whoLabel = readerLabel(author) + (author === state.viewerId ? "（我）" : "") + " 说";
     const at = c.at || "";
     // 改/删按钮：放在 .meta 行；不分身份都允许（私有工具）
@@ -3152,7 +3167,7 @@ function renderIndex(){
         // 给 highlight 加 bookName 字段，jumpToHighlight 才知道要打开哪本
         const item = Object.assign({}, h, { bookName: name });
         div.innerHTML = '<div class="q">' + esc(preview) + '</div>' +
-          '<div class="meta"><span>' + esc(readerLabel(h.author_id || h.owner || "user")) + " · " +
+          '<div class="meta"><span>' + esc(readerLabel(h.author_id || h.owner || null)) + " · " +
           (h.chapter ? esc(h.chapter) + " · " : "") + cnt + ' 条批注</span>' +
           '<button>跳回原文</button></div>';
         div.querySelector("button").addEventListener("click", () => jumpToHighlight(item));
@@ -3214,12 +3229,12 @@ function renderExcerpt(){
     const q = (h.text || "").trim();
     let notesHtml = "";
     for (const c of (h.thread || [])){
-      const who = c.who || "user";
-      const whoLabel = readerLabel(c.author_id || (who === "ai" ? c.name : "user")) + "：";
+      const who = c.who === "user" ? "user" : "ai";
+      const whoLabel = readerLabel(annotationAuthor(c)) + "：";
       notesHtml += '<div class="n ' + who + '">' + esc(whoLabel) + esc(c.text || "") + '</div>';
     }
     div.innerHTML = '<div class="q">「' + esc(q) + '」</div>' +
-      '<div class="meta">' + esc(readerLabel(h.author_id || h.owner || "user")) +
+      '<div class="meta">' + esc(readerLabel(h.author_id || h.owner || null)) +
       (h.location_status && h.location_status !== "ok" ? " · 定位异常，请核对原文" : "") + '</div>' +
       (notesHtml ? '<div class="notes">' + notesHtml + '</div>' : '');
     wrap.appendChild(div);

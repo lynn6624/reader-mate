@@ -26,6 +26,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from bisect import bisect_right
 from collections import OrderedDict, deque
 from datetime import datetime
@@ -56,8 +57,8 @@ PROGRESS_FILE = os.path.join(DATA_DIR, "progress.json")
 LIBRARY_FILE = os.path.join(DATA_DIR, "library.json")
 NOTES_FILE = os.path.join(DATA_DIR, "notes.json")
 MD_FILE = os.path.join(DATA_DIR, "阅读进度.md")
-# 身份令牌（D1）：{身份: 钥匙}。文件不存在 → 视为空（只有 user 能写），
-# 绝不能因为缺文件就报错——缺它就是「还没配」，行为退回到 v1.0。
+# 身份令牌：{稳定身份ID: 凭据}。缺失/损坏时解析为空；云端鉴权拒绝访问，
+# 云端启动另要求保留 user 凭据。仅非云端本机模式允许无身份令牌的 user。
 IDENTITIES_FILE = os.path.join(DATA_DIR, "identities.json")
 # 写入审计：data/audit.log（JSONL，每行一条）。**只增不改**——它不防伪，
 # 只让「谁、什么时候、以什么身份、写了什么」留痕，事后可查。
@@ -573,7 +574,7 @@ HIGHLIGHT_TEXT_MAX = 4000   # 划线原文上限（按权重算）
 COMMENT_WEIGHT_MAX = 300    # 单条批注上限（按**权重**算：CJK/全角 2 分、其余 1 分）
                             # 300 分 ≈ 纯中文 150 字 ≈ 纯英文 300 字符——两种语言"读起来一样长"，
                             # 跟推特同源（它的 280 也是权重，不是字符数）
-COMMENT_CHARS_HARD_MAX = 600  # 字符数硬上限（只用于读旧数据时的清洗切片；校验一律按权重）
+COMMENT_CHARS_HARD_MAX = 600  # 新写入硬上限；读取历史正文不裁剪，提交校验按权重。
 THREAD_MAX = 12             # 每条划线 thread 上限（= 6 轮来回）
 CHAPTER_MAX = 80
 NAME_AI_MAX = 32
@@ -710,8 +711,7 @@ def resolve_who(claimed, token: str) -> str:
     规则（照抄规格第六节）：
       1. 带令牌且与某个身份的钥匙 hmac.compare_digest 相等 → 返回**那个身份**（忽略 claimed）
       2. 带令牌但没人匹配 → 返回 ""（拒绝）
-      3. 不带令牌 → 用 norm_who(claimed)；**结果必须是 user 才放行**，
-         自称 op001 / ai1 之类一律返回 ""（拒绝）
+      3. 云端空令牌直接拒绝；仅非云端本机模式可无身份令牌使用 user。
     """
     token = (token or "").strip()
     if token:
@@ -770,7 +770,14 @@ def _annotation_id():
 
 
 def _annotation_author(c):
-    return norm_who(c.get("author_id") or (c.get("name") if c.get("who") == "ai" else "user"))
+    """Resolve persisted evidence only; inactive/unknown IDs are never relabelled."""
+    if c.get("author_id"):
+        return c["author_id"]
+    if c.get("who") == "user":
+        return "user"
+    if c.get("who") == "ai":
+        return c.get("name") or None
+    return c.get("who") or None
 
 
 def _quote_at(text, start, end):
@@ -804,35 +811,138 @@ def _chapter_before_index(book_text, index):
     return _chapter_at(book_text, len(book_text[:index].encode("utf-16-le")) // 2)
 
 
+class NotesStoreError(ValueError):
+    status = 503
+
+
+class NotesConflictError(NotesStoreError):
+    status = 409
+
+
+class NotesSnapshot(dict):
+    """A validated read view plus an optimistic commit token, never serialized."""
+    source_digest = None
+
+
+def _notes_error():
+    return NotesStoreError("批注存储存在损坏或无法安全解释的记录；原文件已保留，请管理员核查")
+
+
+def _notes_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise _notes_error()
+        result[key] = value
+    return result
+
+
+def _notes_constant(_):
+    raise _notes_error()
+
+
+def _notes_raw():
+    try:
+        with open(NOTES_FILE, "rb") as stream:
+            return stream.read()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise _notes_error() from exc
+
+
+def _notes_digest(raw):
+    return hashlib.sha256(raw).hexdigest() if raw is not None else None
+
+
 def load_notes() -> dict:
-    """读 notes.json，缺失/损坏都给空壳。"""
-    nt = load_json(NOTES_FILE, {})
-    if not isinstance(nt, dict):
-        nt = {}
+    """Lossless historical view. Corruption blocks writes instead of becoming empty."""
+    raw = _notes_raw()
+    try:
+        value = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=_notes_pairs,
+                           parse_constant=_notes_constant) if raw is not None else {}
+    except (ValueError, UnicodeError) as exc:
+        raise _notes_error() from exc
+    if not isinstance(value, dict) or not isinstance(value.get("books", {}), dict):
+        raise _notes_error()
+    nt = NotesSnapshot(value)
+    nt.source_digest = _notes_digest(raw)
     nt.setdefault("version", NOTES_VERSION)
-    nt.setdefault("updated", now_iso())
-    nt.setdefault("books", {})
-    books = nt["books"]
-    if not isinstance(books, dict):
-        nt["books"] = {}
-    for name, b in list(nt["books"].items()):
-        if not isinstance(b, dict):
-            nt["books"][name] = {"highlights": []}
-            continue
-        b.setdefault("highlights", [])
-        if not isinstance(b["highlights"], list):
-            b["highlights"] = []
-        b["highlights"] = [_norm_highlight(h) for h in b["highlights"] if isinstance(h, dict)]
-        for h in b["highlights"]:
+    nt.setdefault("updated", None)
+    nt["books"] = {}
+    for name, book in value.get("books", {}).items():
+        if not isinstance(book, dict) or not isinstance(book.get("highlights", []), list):
+            raise _notes_error()
+        current = dict(book)
+        current["highlights"] = [_norm_highlight(h) for h in book.get("highlights", [])]
+        ids = [h["id"] for h in current["highlights"]]
+        if len(set(ids)) != len(ids):
+            raise _notes_error()
+        for h in current["highlights"]:
             h["book_id"] = name
+        nt["books"][name] = current
     return nt
 
 
+@contextmanager
+def _notes_commit_lock():
+    """Serialize cooperating writers across processes; full Web RMW also uses _lock."""
+    with open(NOTES_FILE + ".lock", "a+b") as stream:
+        if os.name == "nt":
+            import msvcrt
+            stream.seek(0, 2)
+            if not stream.tell():
+                stream.write(b"\0"); stream.flush()
+            stream.seek(0); msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                stream.seek(0); msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
 def save_notes(nt: dict):
-    # 毫秒级共读轮询可能连续写入；用微秒时间戳作为轻量修订号。
-    nt["updated"] = datetime.now().isoformat(timespec="microseconds")
-    nt["version"] = NOTES_VERSION
-    dump_json(NOTES_FILE, nt)
+    if not isinstance(nt, NotesSnapshot):
+        raise NotesConflictError("请重新读取批注后再保存；拒绝覆盖未知版本")
+    with _notes_commit_lock():
+        original = _notes_raw()
+        if _notes_digest(original) != nt.source_digest:
+            raise NotesConflictError("批注已更新，请重新读取后重试")
+        # Preserve the exact pre-upgrade file once, including unknown legacy fields.
+        if original is not None and nt.get("preservation_version") != 1:
+            directory = os.path.join(DATA_DIR, "notes-backups")
+            os.makedirs(directory, mode=0o700, exist_ok=True)
+            backup = os.path.join(directory, "legacy-" + nt.source_digest + ".json")
+            try:
+                fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                with open(backup, "rb") as stream:
+                    if stream.read() != original:
+                        raise _notes_error()
+            else:
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(original); stream.flush(); os.fsync(stream.fileno())
+        value = dict(nt, updated=datetime.now().isoformat(timespec="microseconds"),
+                     version=NOTES_VERSION, preservation_version=1)
+        encoded = json.dumps(value, ensure_ascii=False, indent=1, allow_nan=False).encode("utf-8")
+        fd, temporary = tempfile.mkstemp(prefix=".notes-", dir=DATA_DIR)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(encoded); stream.flush(); os.fsync(stream.fileno())
+            if _notes_digest(_notes_raw()) != nt.source_digest:
+                raise NotesConflictError("批注已更新，请重新读取后重试")
+            os.replace(temporary, NOTES_FILE)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        nt.update(value)
+        nt.source_digest = _notes_digest(encoded)
 
 
 def _norm_style(s):
@@ -840,46 +950,58 @@ def _norm_style(s):
 
 
 def _norm_highlight(h: dict) -> dict:
-    """规范化一条划线的字段：补默认、裁剪、收敛非法值。"""
+    """Add compatible view fields without dropping historical text, IDs or extras."""
+    if not isinstance(h, dict):
+        raise _notes_error()
+    if any(key not in h or h[key] is None for key in ("start", "end")):
+        raise _notes_error()
+    if "text" in h and not isinstance(h["text"], str):
+        raise _notes_error()
+    for key in ("text", "owner", "author_id", "id", "highlight_id", "created", "chapter", "chapter_id", "book_hash", "color"):
+        if key in h and h[key] is not None and not isinstance(h[key], str):
+            raise _notes_error()
     try:
-        start = max(0, int(h.get("start") or 0))
-    except Exception:
-        start = 0
-    try:
-        end = max(start, int(h.get("end") or start))
-    except Exception:
-        end = start
-    text = str(h.get("text") or "")[:HIGHLIGHT_TEXT_MAX]
+        start = int(h.get("start") or 0)
+        end = int(h.get("end") if h.get("end") is not None else start)
+        if start < 0 or end < start or any(isinstance(h.get(k), bool) for k in ("start", "end")):
+            raise ValueError()
+        if any(isinstance(h.get(k), float) and h[k] != int(h[k]) for k in ("start", "end")):
+            raise ValueError()
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise _notes_error() from exc
+    text = h.get("text") or ""
     style = _norm_style(h.get("style") or "line")
-    color = str(h.get("color") or "")[:32]
-    chapter = str(h.get("chapter") or "")[:CHAPTER_MAX]
-    thread = h.get("thread") or []
+    color = h.get("color") or ""
+    chapter = h.get("chapter") or ""
+    thread = h.get("thread", [])
     if not isinstance(thread, list):
-        thread = []
+        raise _notes_error()
     norm_thread = []
+    hid = h.get("highlight_id") or h.get("id") or "legacy_h_" + hashlib.sha256(
+        json.dumps(h, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:20]
+    if h.get("highlight_id") and h.get("id") and h["highlight_id"] != h["id"]:
+        raise _notes_error()
     for c in thread:
         if not isinstance(c, dict):
-            continue
-        who = c.get("who") if c.get("who") in ("user", "ai") else None
-        if who is None:
-            continue
-        msg = str(c.get("text") or "")[:COMMENT_CHARS_HARD_MAX]
-        if not msg:
-            continue
-        item = {"who": who, "text": msg, "at": c.get("at") or now_iso(),
-                "annotation_id": str(c.get("annotation_id") or ""),
-                "highlight_id": str(h.get("highlight_id") or h.get("id") or ""),
-                "author_id": _annotation_author(c), "created": c.get("created") or c.get("at") or now_iso()}
-        if who == "ai" and c.get("name"):
-            item["name"] = str(c.get("name"))[:NAME_AI_MAX]
+            raise _notes_error()
+        if "text" in c and not isinstance(c["text"], str):
+            raise _notes_error()
+        for key in ("who", "name", "text", "author_id", "annotation_id", "at", "created"):
+            if key in c and c[key] is not None and not isinstance(c[key], str):
+                raise _notes_error()
+        item = dict(c)
+        item.update(text=c.get("text") or "", at=c.get("at"),
+                    author_id=_annotation_author(c), created=c.get("created") or c.get("at"))
+        item["author_status"] = "recorded" if item["author_id"] else "unknown"
+        if not item.get("annotation_id"):
+            legacy = (hid + ":" + str(len(norm_thread)) + ":" + item["created"] + ":" + item["text"]) if item["created"] else (
+                hid + ":" + str(len(norm_thread)) + ":" + json.dumps(c, ensure_ascii=False, sort_keys=True))
+            item["annotation_id"] = "legacy_" + hashlib.sha256(
+                legacy.encode("utf-8")).hexdigest()[:20]
+        item["highlight_id"] = hid
         norm_thread.append(item)
-    hid = str(h.get("highlight_id") or h.get("id") or "") or _rand_id()
-    for i, c in enumerate(norm_thread):
-        if not c["annotation_id"]:
-            # Legacy comments retain a stable public ID without rewriting notes.json on read.
-            c["annotation_id"] = "legacy_" + hashlib.sha256((hid + ":" + str(i) + ":" + c["created"] + ":" + c["text"]).encode()).hexdigest()[:20]
-        c["highlight_id"] = hid
-    return {
+    author = h.get("author_id") or h.get("owner") or None
+    return dict(h, **{
         "id": hid, "highlight_id": hid,
         "start": start,
         "end": end,
@@ -887,14 +1009,15 @@ def _norm_highlight(h: dict) -> dict:
         "style": style,
         "color": color,
         "chapter": chapter,
-        "chapter_id": str(h.get("chapter_id") or chapter or "正文")[:CHAPTER_MAX],
+        "chapter_id": h.get("chapter_id") or chapter or "正文",
         "book_id": str(h.get("book_id") or ""),
         "book_hash": str(h.get("book_hash") or ""),
-        "created": str(h.get("created") or now_iso()),
-        "owner": norm_who(h.get("owner")),
-        "author_id": norm_who(h.get("author_id") or h.get("owner")),
+        "created": h.get("created"),
+        "owner": h.get("owner"),
+        "author_id": author,
+        "author_status": "recorded" if author else "unknown",
         "thread": norm_thread,
-    }
+    })
 
 
 def scan_books() -> dict:
@@ -1085,8 +1208,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
     def _who_token(self) -> str:
         """取身份令牌（D1）：优先 X-Who-Token 头，其次 ?who_token= 查询参数。
 
-        之所以要支持查询参数：sendBeacon 带不了自定义请求头（fetch 也不行），
-        最后一笔进度只能走 URL（关页前的 sendBeacon）。读端不查这个头。
+        查询参数兼容 sendBeacon 不能自定义身份请求头的关页保存路径。
+        云端读写均由外层鉴权校验，显式错误令牌不会回退到设备 Cookie。
         """
         h = (self.headers.get("X-Who-Token") or "").strip()
         if h:
@@ -1189,6 +1312,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                     return self._err("审计仅限主人读取", 403)
                 return self._api_audit()
             return self._err("没有这个路径", 404)
+        except NotesStoreError as e:
+            return self._err(str(e), e.status)
         except Exception as e:
             return self._err("服务端出错：%s" % e, 500)
 
@@ -1563,6 +1688,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             if path == "/api/notes/highlight":
                 return self._api_notes_highlight_delete()
             return self._err("没有这个路径", 404)
+        except NotesStoreError as e:
+            return self._err(str(e), e.status)
         except Exception as e:
             return self._err("服务端出错：%s" % e, 500)
 
@@ -1599,6 +1726,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             if path == "/api/notes/comment/delete":
                 return self._api_notes_comment_delete()
             return self._err("没有这个路径", 404)
+        except NotesStoreError as e:
+            return self._err(str(e), e.status)
         except Exception as e:
             return self._err("服务端出错：%s" % e, 500)
 
@@ -1846,7 +1975,7 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                 highlights = [h for h in highlights if h["chapter_id"] == chapter]
             if author:
                 highlights = [h for h in highlights if h["author_id"] == author]
-            highlights.sort(key=lambda h: (h["start"], h["created"], h["id"]))
+            highlights.sort(key=lambda h: (h["start"], h["created"] or "", h["id"]))
             try:
                 offset = max(0, int((q.get("offset") or ["0"])[0]))
                 limit = min(200, max(1, int((q.get("limit") or ["200"])[0])))
@@ -2123,8 +2252,11 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         hid = (data.get("id") or "").strip()
         if not hid:
             return self._err("划线 id 不能为空")
+        annotation_id = data.get("annotation_id")
+        if annotation_id is not None and (not isinstance(annotation_id, str) or not annotation_id):
+            return self._err("annotation_id 不合法")
         try:
-            index = int(data.get("index"))
+            index = int(data.get("index", -1) if annotation_id else data.get("index"))
         except Exception:
             return self._err("index 必须是整数")
         # D1：编辑也要通过身份令牌——避免被任何进程冒充他人改话。
@@ -2157,6 +2289,11 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             thread = target.get("thread") or []
             if not isinstance(thread, list):
                 thread = []
+            if annotation_id is not None:
+                matches = [i for i, item in enumerate(thread) if item.get("annotation_id") == annotation_id]
+                if len(matches) != 1:
+                    return self._err("批注已变更或不存在，请刷新后重试", 409)
+                index = matches[0]
             if index < 0 or index >= len(thread):
                 return self._err("index 越界：%d（当前 %d 条）" % (index, len(thread)))
             item = thread[index]
@@ -2190,8 +2327,11 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         hid = (data.get("id") or "").strip()
         if not hid:
             return self._err("划线 id 不能为空")
+        annotation_id = data.get("annotation_id")
+        if annotation_id is not None and (not isinstance(annotation_id, str) or not annotation_id):
+            return self._err("annotation_id 不合法")
         try:
-            index = int(data.get("index"))
+            index = int(data.get("index", -1) if annotation_id else data.get("index"))
         except Exception:
             return self._err("index 必须是整数")
         # D1：删除也走身份令牌——避免任何进程冒充他人删话。
@@ -2214,6 +2354,11 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             thread = target.get("thread") or []
             if not isinstance(thread, list):
                 thread = []
+            if annotation_id is not None:
+                matches = [i for i, item in enumerate(thread) if item.get("annotation_id") == annotation_id]
+                if len(matches) != 1:
+                    return self._err("批注已变更或不存在，请刷新后重试", 409)
+                index = matches[0]
             if index < 0 or index >= len(thread):
                 return self._err("index 越界：%d（当前 %d 条）" % (index, len(thread)))
             item = thread[index]
@@ -2270,13 +2415,9 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                     lines.append("> " + quote)
             lines.append("")
             for c in (h.get("thread") or []):
-                who = c.get("who")
                 msg = (c.get("text") or "").replace("\n", " ")
-                if who == "user":
-                    lines.append("- 你：%s" % msg)
-                else:
-                    label = c.get("name") or "ai"
-                    lines.append("- %s：%s" % (label, msg))
+                label = _annotation_author(c) or "历史作者未知"
+                lines.append("- %s：%s" % (label, msg))
             lines.append("")
         body = ("\n".join(lines)).encode("utf-8")
         self.send_response(200)

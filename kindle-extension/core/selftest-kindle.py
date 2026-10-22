@@ -27,6 +27,9 @@ def main():
     with tempfile.TemporaryDirectory() as directory:
         base = pathlib.Path(directory)
         shutil.copy(ROOT / "reader_server.py", base / "reader_server.py")
+        shutil.copy(ROOT / "chapter_index.py", base / "chapter_index.py")
+        shutil.copy(ROOT / "navigation.py", base / "navigation.py")
+        shutil.copy(ROOT / "progress_catalog.py", base / "progress_catalog.py")
         shutil.copytree(ROOT / "web", base / "web")
         shutil.copytree(ROOT / "extensions", base / "extensions")
         (base / "data").mkdir()
@@ -78,6 +81,8 @@ def main():
                 device = {"Cookie": cookie}
                 identity = client.get(url + "/api/auth-check", headers=device)
                 assert identity.status_code == 200 and identity.json()["who"] == "user"
+                assert client.get(url + "/api/auth-check", headers=dict(device, **{"X-Who-Token":"invalid"})).status_code == 401
+                assert client.get(url + "/api/auth-check?who_token=invalid", headers=device).status_code == 401
                 assert client.get(url + "/api/books", headers=device).status_code == 200
                 assert client.get(url + "/", headers=device).headers["Location"] == "/kindle"
                 full_page = client.get(url + "/?full=1&kindle=1", headers=device)
