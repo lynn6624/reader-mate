@@ -2603,7 +2603,9 @@ function highlightColor(author){
   for (const c of String(author || "")) n = (n * 31 + c.charCodeAt(0)) >>> 0;
   return otherHlColors[n % otherHlColors.length];
 }
+let memberProfiles = {};
 function readerLabel(author){
+  if (author && Object.prototype.hasOwnProperty.call(memberProfiles, author) && memberProfiles[author].kind !== "legacy") return memberProfiles[author].nickname;
   return String(author || "历史作者未知");
 }
 function annotationAuthor(comment){
@@ -3364,6 +3366,7 @@ async function startReaderGate(){
   let access = await checkReaderAccess(headers);
   if (access){
     gateIdentity = access.mode === "identity" ? access.who : "";
+    memberProfiles = access.members || {};
     gate.hidden = true; await bootReader(); return;
   }
   input.focus();
@@ -3382,6 +3385,7 @@ async function startReaderGate(){
     }
     if (access){
       gateIdentity = access.mode === "identity" ? access.who : "";
+    memberProfiles = access.members || {};
       try {
         if (access.mode === "identity" || mode === "identity") localStorage.setItem(RM_WHO_TOKEN_KEY, entered);
         else if (access.mode === "token" || mode === "token") localStorage.setItem(RM_TOKEN_KEY, entered);

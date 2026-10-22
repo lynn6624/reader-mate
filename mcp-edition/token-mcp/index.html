@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>身份令牌 · 小书桌</title>
+<title>共读成员 · 小书桌</title>
 <style>
   :root{
     --bg:#f6f3ee; --fg:#2b2722; --dim:#8a8175; --line:#e2dbd0;
@@ -19,7 +19,7 @@
         padding:14px;margin-bottom:14px}
   .card h2{font-size:14px;margin:0 0 10px;font-weight:600;color:var(--dim);letter-spacing:.04em}
   label{display:block;font-size:13px;color:var(--dim);margin:8px 0 4px}
-  input{width:100%;padding:11px 12px;font-size:16px;border:1px solid var(--line);
+  input,select{width:100%;padding:11px 12px;font-size:16px;border:1px solid var(--line);
         border-radius:10px;background:#fff;color:var(--fg);font-family:inherit}
   input:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:transparent}
   button{padding:11px 16px;font-size:15px;font-family:inherit;border-radius:10px;
@@ -48,190 +48,88 @@
   .empty{color:var(--dim);font-size:13.5px;padding:6px 0}
 </style>
 </head>
-<body>
-<div class="wrap">
-  <h1>身份令牌</h1>
-  <div class="sub">小书桌 · 共读身份管理 —— 在哪台设备打开，就在哪台生成并复制</div>
-  <div class="msg err" id="adminError" style="display:none">管理员配置读取失败。为保护现有身份，首次设置已锁定；请检查服务器上的管理员文件。</div>
-
-  <!-- 状态 / 首次设置 -->
-  <div class="card" id="setupCard" style="display:none">
-    <h2>首次设置</h2>
-    <div class="hint">还没有设过管理员口令。请设一个（至少 8 位）——
-      <b>之后创建和删除身份都需要它</b>，它只有你知道，不经过任何人。</div>
-    <label>一次性初始化码</label>
-    <input id="setupCode" type="password" autocomplete="off" placeholder="从本机初始化码文件复制">
-    <label>管理员口令</label>
-    <input id="setupPw" type="password" autocomplete="new-password" placeholder="至少 8 位">
-    <label>再输一次</label>
-    <input id="setupPw2" type="password" autocomplete="new-password">
-    <div class="row" style="margin-top:12px">
-      <button class="primary" id="setupBtn">设置口令</button>
-    </div>
-  </div>
-
-  <!-- 身份列表 -->
-  <div class="card" id="listCard">
-    <h2>现有身份</h2>
-    <ul id="list"><li class="empty">载入中…</li></ul>
-    <div class="hint" id="listHint"></div>
-  </div>
-
-  <!-- 创建 -->
-  <div class="card">
-    <h2>创建身份</h2>
-    <label>身份名（字母 / 数字 / _ / -，1–32 位）</label>
-    <input id="newName" placeholder="例如 reader01 或 agent01" autocapitalize="off" autocorrect="off" spellcheck="false">
-    <label>管理员口令</label>
-    <input id="newPw" type="password" autocomplete="current-password">
-    <div class="row" style="margin-top:12px">
-      <button class="primary" id="createBtn">生成令牌</button>
-    </div>
-    <div class="msg" id="createMsg"></div>
-    <div id="tokenBox" style="display:none">
-      <div class="big" style="margin-top:12px">⚠️ 令牌只显示这一次</div>
-      <div class="tok" id="tokenVal"></div>
-      <div class="row" style="margin-top:8px">
-        <button id="copyBtn">复制令牌</button>
-      </div>
-      <label>通用 MCP URL</label>
-      <div class="tok" id="mcpUrlVal"></div>
-      <div class="row" style="margin-top:8px">
-        <button id="copyUrlBtn">复制 URL</button>
-      </div>
-      <div class="hint">支持 Bearer 令牌的客户端需分别填写上面的 URL 和身份令牌。
-        ChatGPT 的 004 专用连接地址不在这里。关掉或刷新页面后，此结果不再显示；身份令牌也无法找回。</div>
-    </div>
-  </div>
-
-  <!-- 删除 -->
-  <div class="card">
-    <h2>删除身份</h2>
-    <div class="hint">删除后，用那个令牌的客户端会立刻失效。此操作需要管理员口令。</div>
-    <label>要删除的身份名</label>
-    <input id="delName" placeholder="身份名" autocapitalize="off" autocorrect="off" spellcheck="false">
-    <label>管理员口令</label>
-    <input id="delPw" type="password" autocomplete="current-password">
-    <div class="row" style="margin-top:12px">
-      <button class="danger" id="delBtn">删除</button>
-    </div>
-    <div class="msg" id="delMsg"></div>
-  </div>
-
-  <div class="hint" style="text-align:center;padding:8px 0 24px">
-    令牌值任何时候都不会在这里回显 · 口令只存 salt+sha256
-  </div>
-</div>
-
-<script>
-const $ = (id) => document.getElementById(id);
-
-function msg(el, kind, text){
-  el.className = 'msg show ' + kind;
-  el.textContent = text;
+<body><div class="wrap">
+<h1>共读成员</h1><div class="sub">添加人类读者或 Agent，每位成员拥有独立的阅读身份。</div>
+<div class="card" id="setupCard" hidden><h2>首次设置</h2>
+<label for="setupCode">一次性初始化码</label><input id="setupCode" type="password" autocomplete="off">
+<label for="setupPw">管理员口令（至少 8 位）</label><input id="setupPw" type="password" autocomplete="new-password">
+<label for="setupPw2">再输一次</label><input id="setupPw2" type="password" autocomplete="new-password">
+<button id="setupBtn" class="primary">设置口令</button></div>
+<div class="card"><label for="adminPw">管理员口令</label><input id="adminPw" type="password" autocomplete="current-password">
+<div class="hint">用于查看成员、添加成员和撤销凭据。刷新页面后需重新输入。</div>
+<button id="refreshBtn">查看 / 刷新成员</button><div id="statusMsg" class="msg" role="status"></div></div>
+<div class="card"><h2>现有成员</h2><ul id="list"><li class="empty">输入管理员口令后查看</li></ul>
+<div class="hint">昵称可以重复，稳定 ID 各自独立。撤销凭据不会删除成员、进度或批注。user 为保留系统身份。</div></div>
+<div class="card"><h2>添加共读成员</h2>
+<label for="kind">成员类型</label><select id="kind"><option value="human">人类读者</option><option value="agent">Agent</option></select>
+<label for="nickname">昵称</label><input id="nickname" maxlength="64" placeholder="填写便于识别的名字" autocomplete="off">
+<div id="agentOptions" hidden><label for="channel">客户端接入方式</label><select id="channel"><option value="mcp">URL + Bearer 令牌</option><option value="mcp-url">仅 URL（GPT 等客户端）</option></select></div>
+<div class="hint">系统生成稳定 ID。成员类型不会授予管理员权限。</div>
+<button id="createBtn" class="primary">添加成员并生成凭据</button><div id="createMsg" class="msg" role="status"></div>
+<div id="tokenBox" hidden><div class="big">凭据仅显示这一次，请私下保存</div>
+<div id="createdMember" class="hint"></div><label id="urlLabel">接入地址</label><div class="tok" id="urlVal"></div><button id="copyUrlBtn">复制地址</button>
+<div id="tokenDetail"><label>访问令牌</label><div class="tok" id="tokenVal"></div><button id="copyTokenBtn">复制令牌</button></div>
+<div id="instructions" class="hint"></div><button id="dismissBtn">我已保存，隐藏凭据</button></div></div>
+</div><script>
+const $ = id => document.getElementById(id);
+function msg(id, text, ok=false){ $(id).className='msg show '+(ok?'ok':'err'); $(id).textContent=text; }
+async function api(path,body){
+  const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'});
+  const d=await r.json(); if(!r.ok || !d.ok) throw new Error(d.error || '请求失败'); return d;
 }
-function clearMsg(el){ el.className = 'msg'; el.textContent = ''; }
-
-async function api(method, path, body){
-  const opt = { method, headers: {} };
-  if (body !== undefined){
-    opt.headers['Content-Type'] = 'application/json';
-    opt.body = JSON.stringify(body);
-  }
-  const r = await fetch(path, opt);
-  let d = null;
-  try { d = await r.json(); } catch(e) { d = { ok:false, error:'服务端没返回 JSON' }; }
-  return { status: r.status, data: d };
-}
-
+function pw(){ const password=$('adminPw').value; if(!password)throw new Error('请先输入管理员口令'); return password; }
+function clearSecret(){ $('tokenBox').hidden=true; ['urlVal','tokenVal','createdMember','instructions'].forEach(id=>$(id).textContent=''); }
+$('dismissBtn').onclick=clearSecret;
+window.addEventListener('pagehide',()=>{clearSecret();$('adminPw').value='';});
+$('kind').onchange=()=>{ $('agentOptions').hidden=$('kind').value!=='agent'; };
+const kinds={human:'人类读者',agent:'Agent',legacy:'历史成员（类型未确认）'};
+const channels={web:'网页',mcp:'MCP / Bearer','mcp-url':'MCP / 仅 URL',legacy:'原有凭据'};
 async function refresh(){
-  const { data } = await api('GET', '/api/status');
-  const configured = !!(data && data.configured);
-  $('setupCard').style.display = configured ? 'none' : 'block';
-  $('adminError').style.display = data && data.admin_error ? 'block' : 'none';
-
-  const ids = (data && data.identities) || [];
-  const ul = $('list');
-  ul.innerHTML = '';
-  if (!ids.length){
-    ul.innerHTML = '<li class="empty">还没有任何身份</li>';
-  } else {
-    ids.forEach((n) => {
-      const li = document.createElement('li');
-      const s = document.createElement('span');
-      s.className = 'name';
-      s.textContent = n;
-      const b = document.createElement('button');
-      b.textContent = '填入删除框';
-      b.onclick = () => { $('delName').value = n; $('delName').scrollIntoView({behavior:'smooth', block:'center'}); };
-      li.appendChild(s); li.appendChild(b);
-      ul.appendChild(li);
-    });
+  const d=await api('/api/members/list',{password:pw()}); const ul=$('list'); ul.replaceChildren();
+  for(const m of d.members){
+    const li=document.createElement('li'), box=document.createElement('div');box.style.flex='1';
+    const title=document.createElement('strong');title.textContent=m.nickname;
+    const detail=document.createElement('div');detail.className='hint';
+    detail.textContent=m.id+' · '+kinds[m.kind]+' · '+channels[m.credential.channel]+' · '+(m.credential.status==='active'?'有效':'已撤销');
+    box.append(title,detail);li.append(box);
+    if(m.id!=='user' && m.credential.status==='active'){
+      const b=document.createElement('button'); b.textContent='撤销凭据';b.className='danger';
+      b.onclick=async()=>{
+        if(!confirm('撤销「'+m.nickname+'」（'+m.id+'）的此项凭据？后续请求会被拒绝，历史记录保留。'))return;
+        b.disabled=true;
+        try{await api('/api/credentials/revoke',{password:pw(),member_id:m.id,credential_id:m.credential.id});clearSecret();await refresh();msg('statusMsg','凭据已撤销，历史记录保留。',true);}
+        catch(e){msg('statusMsg',e.message);}finally{b.disabled=false;}
+      };li.append(b);
+    }ul.append(li);
   }
-  $('listHint').textContent = '共 ' + ids.length + ' 个身份 · 令牌值不显示（需要时删掉重建）';
+  msg('statusMsg','共 '+d.members.length+' 位成员，列表不返回令牌。',true);
 }
-
-$('setupBtn').onclick = async () => {
-  const a = $('setupPw').value, b = $('setupPw2').value;
-  const code = $('setupCode').value.trim();
-  if (!code) return alert('请输入一次性初始化码');
-  if (a.length < 8) return alert('口令至少 8 位');
-  if (a !== b) return alert('两次输入不一致');
-  const { data } = await api('POST', '/api/setup', { password: a, bootstrap: code });
-  if (data.ok){ $('setupCode').value = $('setupPw').value = $('setupPw2').value = ''; alert('口令已设置'); refresh(); }
-  else alert(data.error || '设置失败');
+$('refreshBtn').onclick=()=>refresh().catch(e=>{ $('list').replaceChildren();msg('statusMsg',e.message); });
+$('createBtn').onclick=async()=>{
+  const button=$('createBtn');button.disabled=true;clearSecret();
+  try{
+    const kind=$('kind').value,channel=kind==='human'?'web':$('channel').value;
+    const d=await api('/api/members',{password:pw(),kind,channel,nickname:$('nickname').value.trim()});
+    $('createdMember').textContent=d.member.nickname+' · '+d.member.id;
+    $('urlVal').textContent=d.url;$('tokenVal').textContent=channel==='mcp-url'?'':d.token;
+    $('tokenDetail').hidden=channel==='mcp-url';$('instructions').textContent=d.instructions;
+    $('tokenBox').hidden=false;msg('createMsg','成员已创建，请保存下方接入信息。',true);
+    try{await refresh();}catch(e){msg('statusMsg','成员已创建；列表刷新失败，请保存凭据后重试。');}
+  }catch(e){msg('createMsg',e.message);}finally{button.disabled=false;}
 };
-
-$('createBtn').onclick = async () => {
-  clearMsg($('createMsg'));
-  $('tokenBox').style.display = 'none';
-  const name = $('newName').value.trim();
-  const pw = $('newPw').value;
-  if (!name) return msg($('createMsg'), 'err', '请填身份名');
-  if (!pw) return msg($('createMsg'), 'err', '请填管理员口令');
-  const { data } = await api('POST', '/api/identities', { name, password: pw });
-  if (!data.ok) return msg($('createMsg'), 'err', data.error || '失败');
-  $('newName').value = '';
-  $('newPw').value = '';
-  $('tokenVal').textContent = data.token;
-  $('mcpUrlVal').textContent = data.mcp_url;
-  $('tokenBox').style.display = 'block';
-  msg($('createMsg'), 'ok', '已创建「' + data.name + '」—— 令牌和通用 URL 在下方');
-  refresh();
-};
-
-async function copyResult(valueId, buttonId, label){
-  const t = $(valueId).textContent;
-  try {
-    await navigator.clipboard.writeText(t);
-    $(buttonId).textContent = '已复制 ✓';
-  } catch(e){
-    const r = document.createRange();
-    r.selectNodeContents($(valueId));
-    const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
-    $(buttonId).textContent = '已选中，请手动复制';
-  }
-  setTimeout(() => { $(buttonId).textContent = label; }, 2500);
+async function copy(id){
+  try{await navigator.clipboard.writeText($(id).textContent);}
+  catch(e){const r=document.createRange();r.selectNodeContents($(id));const s=getSelection();s.removeAllRanges();s.addRange(r);}
 }
-$('copyBtn').onclick = () => copyResult('tokenVal', 'copyBtn', '复制令牌');
-$('copyUrlBtn').onclick = () => copyResult('mcpUrlVal', 'copyUrlBtn', '复制 URL');
-
-$('delBtn').onclick = async () => {
-  clearMsg($('delMsg'));
-  const name = $('delName').value.trim();
-  const pw = $('delPw').value;
-  if (!name) return msg($('delMsg'), 'err', '请填身份名');
-  if (!pw) return msg($('delMsg'), 'err', '请填管理员口令');
-  if (!confirm('确定删除身份「' + name + '」？用它的客户端会立刻失效。')) return;
-  const { data } = await api('DELETE', '/api/identities/' + encodeURIComponent(name), { password: pw });
-  if (!data.ok) return msg($('delMsg'), 'err', data.error || '失败');
-  $('delName').value = '';
-  msg($('delMsg'), 'ok', '已删除「' + data.name + '」');
-  refresh();
+$('copyUrlBtn').onclick=()=>copy('urlVal');$('copyTokenBtn').onclick=()=>copy('tokenVal');
+$('setupBtn').onclick=async()=>{
+  try{if($('setupPw').value!==$('setupPw2').value)throw new Error('两次口令不一致');
+    await api('/api/setup',{password:$('setupPw').value,bootstrap:$('setupCode').value.trim()});
+    $('setupCode').value=$('setupPw').value=$('setupPw2').value='';$('setupCard').hidden=true;msg('statusMsg','口令已设置。',true);
+  }catch(e){msg('statusMsg',e.message);}
 };
-
-refresh();
-</script>
-</body>
-</html>
-
+fetch('/api/status',{cache:'no-store'}).then(r=>r.json()).then(d=>{
+  $('setupCard').hidden=d.configured;
+  if(d.admin_error||d.store_error)msg('statusMsg','服务配置或身份文件不可用，请核对可信备份。');
+}).catch(()=>msg('statusMsg','暂时无法连接服务，请稍后刷新。'));
+</script></body></html>

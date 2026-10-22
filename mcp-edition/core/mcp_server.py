@@ -63,7 +63,7 @@ def bearer(headers):
 def credentials(ctx):
     req = ctx.request_context.request
     token = bearer(req.headers) if req else ""
-    who = reader.resolve_who(None, token) if token else ""
+    who = (reader.channel_identity(token, "mcp") or reader.channel_identity(token, "mcp-url")) if token else ""
     if not who:
         raise ValueError("Invalid identity credential")
     return who, token
@@ -243,7 +243,7 @@ class IdentityGate:
                 return await JSONResponse({"error": "Not found"}, status_code=404)(scope, receive, send)
             headers = {k.decode(): v.decode() for k, v in scope["headers"]}
             token = bearer(headers)
-            if not token or not reader.resolve_who(None, token):
+            if not token or not (reader.channel_identity(token, "mcp") or reader.channel_identity(token, "mcp-url")):
                 response = JSONResponse({"error": "Unauthorized"}, status_code=401)
                 return await response(scope, receive, send)
         await self.app(scope, receive, send)
@@ -259,6 +259,24 @@ class ChatGPT004Gateway:
         self.app = app
 
     async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path", "").startswith("/mcp/member/"):
+            headers = {k.decode().lower(): v.decode() for k, v in scope["headers"]}
+            hosts = [v.decode().lower() for k, v in scope["headers"] if k.lower() == b"host"]
+            token = scope["path"][len("/mcp/member/"):]
+            who = reader.channel_identity(token, "mcp-url")
+            # Legacy tokens are never URL credentials; no implicit second channel.
+            member = reader.member_profiles().get(who, {})
+            if (len(hosts) != 1 or hosts[0] not in (extra_host, extra_host + ":443")
+                    or not re.fullmatch(r"[A-Za-z0-9_-]{43}", token)):
+                return await JSONResponse({"error": "Not found"}, status_code=404)(scope, receive, send)
+            if (not who or member.get("credential", {}).get("channel") != "mcp-url"
+                    or ("authorization" in headers and bearer(headers) != token)):
+                return await JSONResponse({"error": "Unauthorized"}, status_code=401)(scope, receive, send)
+            scope = dict(scope)
+            scope["path"] = MCP_PATH
+            scope["raw_path"] = MCP_PATH.encode("ascii")
+            scope["headers"] = [(k, v) for k, v in scope["headers"] if k.lower() != b"authorization"]
+            scope["headers"].append((b"authorization", b"Bearer " + token.encode("ascii")))
         if scope["type"] == "http" and scope.get("path") == CHATGPT_PATH:
             hosts = [v.decode("ascii", "ignore").lower() for k, v in scope["headers"]
                      if k.lower() == b"host"]

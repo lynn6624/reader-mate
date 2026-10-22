@@ -13,6 +13,7 @@
 启动：python reader_server.py           默认 127.0.0.1:8831
       可用环境变量 READER_HOST / READER_PORT 覆盖
 """
+import member_store
 import hashlib
 import hmac
 import json
@@ -594,25 +595,29 @@ def norm_who(s) -> str:
 
 
 # ---------------------------------------------------------------- 身份令牌（D1）
-# 钥匙文件：{身份: 钥匙}。文件不存在 → 空 dict（一切照旧，不报错）。
+# 钥匙文件兼容 {身份: 钥匙}，PR4 增加 $members 元数据；损坏时拒绝授权。
 # 钥匙是**本机信任环**内的字符串，本机任何进程都能读它——D1 不防这个；
 # 真正的防线是「不绑 0.0.0.0」（见 §5.3）。本机内别让不受信任的进程能读就行。
 def load_identities() -> dict:
     """读 data/identities.json。文件不存在或损坏 → 空 dict。"""
     try:
-        if not os.path.exists(IDENTITIES_FILE):
-            return {}
-        # 用 utf-8-sig 容忍 BOM：PowerShell 的 Out-File -Encoding utf8 会写 BOM，
-        # 用户手改也可能在文件头加了 BOM——保持宽容；JSON 体本身不带 BOM 也照样能读
-        with open(IDENTITIES_FILE, "r", encoding="utf-8-sig") as f:
-            d = json.load(f)
-        if not isinstance(d, dict):
-            return {}
-        # 只保留 字符串键:字符串值，其它一律丢（防止 schema 飘）
-        return {str(k): str(v) for k, v in d.items()
-                if isinstance(k, str) and isinstance(v, str) and v}
-    except Exception:
+        return {k: v for k, v in member_store.read(IDENTITIES_FILE).items() if isinstance(v, str)}
+    except member_store.StoreError:
         return {}
+
+
+def member_profiles():
+    try:
+        return member_store.profiles(member_store.read(IDENTITIES_FILE))
+    except member_store.StoreError:
+        return {}
+
+
+def channel_identity(token, channel):
+    try:
+        return member_store.authenticate(member_store.read(IDENTITIES_FILE), token, channel)
+    except member_store.StoreError:
+        return ""
 
 
 # ---------------------------------------------------------------- 写入审计
@@ -1242,13 +1247,14 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                     return self._redirect("/kindle")
                 return self._page()
             if path == "/api/auth-check":
-                if not self._token_ok():
+                if not self._token_ok() or (CLOUD and not channel_identity(self._who_token(), "web")):
                     return self._err("未授权", 401)
                 who = resolve_who(None, self._who_token()) if CLOUD else "user"
                 return self._json({"ok": True, "authenticated": True,
                                    "required": bool(CLOUD or TOKEN),
                                    "mode": "identity" if CLOUD else ("token" if TOKEN else "open"),
-                                   "who": who})
+                                   "who": who, "members": {k: {field: row[field] for field in ("id", "nickname", "kind")}
+                                        for k, row in member_profiles().items()}})
             # 免鉴权的小路径：/api/ping 给保活脚本/健康检查用（只回一句"活着"，不吐任何数据）；
             # favicon 也无所谓。放在鉴权之前，否则保活脚本会拿到 401 误判服务没起。
             if path == "/api/ping":
@@ -2145,8 +2151,9 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         # 持 user 令牌却以 ai 名义写
         if true_who == "user" and claimed_who == "ai":
             return self._err("身份令牌不对，或者自称 AI 却没带令牌", 403)
-        # 持 AI 令牌却以 user 名义写
-        if true_who != "user" and claimed_who == "user":
+        # 旧 Agent 仍不能自称 user；新的人类成员依据服务端元数据识别。
+        human_member = member_profiles().get(true_who, {}).get("kind") == "human"
+        if true_who != "user" and claimed_who == "user" and not human_member:
             return self._err("身份令牌不对，或者自称 AI 却没带令牌", 403)
         text = str(data.get("text") or "")
         if not text:
@@ -2156,7 +2163,7 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             return self._err(
                 "批注太长：%d/%d（约合 %d 个汉字，上限 150 个汉字左右）"
                 % (w, COMMENT_WEIGHT_MAX, (w + 1) // 2))
-        # thread 项里 who 字段写 user / ai（数据 schema 限定），name 字段写真身
+        # who 保留旧版显示角色；author_id 始终是真实稳定身份，不能从 who 推导新成员 ID。
         # claimed_name_ai：客户端给的 ai 名；与 token 真身不一致就拒（防止冒名）
         name_ai = (data.get("name_ai") or "").strip() if claimed_who == "ai" else ""
         if claimed_who == "ai" and name_ai and len(name_ai) > NAME_AI_MAX:
@@ -2183,7 +2190,7 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             if len(thread) >= THREAD_MAX:
                 return self._err("这条划线聊满了（最多 6 轮），换个地方继续吧")
             # thread 项的 who 字段照规范只用 user / ai；具体身份（op001/ai1…）写进 name
-            item = {"who": claimed_who, "text": text[:COMMENT_CHARS_HARD_MAX], "at": now_iso(),
+            item = {"who": "user" if human_member else claimed_who, "text": text[:COMMENT_CHARS_HARD_MAX], "at": now_iso(),
                     "annotation_id": _annotation_id(), "highlight_id": hid,
                     "author_id": true_who, "created": now_iso()}
             if claimed_who == "ai":
