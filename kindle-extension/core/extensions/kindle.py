@@ -241,7 +241,7 @@ class KindleMixin:
                 "<style>body{font:20px/1.7 serif;max-width:36em;margin:2em auto;padding:0 1em}"
                 "button{font:inherit;padding:.6em 1.4em;background:#eee;border:1px solid #777}"
                 "</style><h1>小书桌 Kindle 配对</h1>"
-                "<p>确认将这台设备作为 002 的阅读设备接入？这不会显示或保存主人令牌。</p>"
+                "<p>确认将这台设备作为主人 user 的阅读设备接入？这不会显示或保存主人令牌。</p>"
                 "<form method=post action='/k/" + html_escape(code) + "'>"
                 "<button type=submit>确认配对并打开书桌</button></form>"
                 "<p>链接十分钟有效，且只能使用一次。</p></html>").encode("utf-8")
@@ -417,7 +417,7 @@ class KindleMixin:
                 params.update(updates)
                 return "/kindle?" + html_escape(urllib.parse.urlencode(params, doseq=True), quote=True)
 
-            content = ("<p class=meta>触屏点按书名阅读；打开时接续 002 已保存的位置。</p>"
+            content = ("<p class=meta>触屏点按书名阅读；打开时接续主人 user 已保存的位置。</p>"
                        "<form method=get action='/kindle'><input name=q value='" +
                        html_escape(search, quote=True) + "' placeholder='搜索书名'>"
                        "<button type=submit>查找</button></form>")
@@ -507,7 +507,7 @@ class KindleMixin:
                          self._kindle_turn_form("同步此处进度", name, start, expected,
                                                 index["revision"], cookie_value, page_chars) + "</div>")
         pct = 100 * start / index["units"] if index["units"] else 100
-        location_label = "本机位置" if paused else "002 的位置"
+        location_label = "本机位置" if paused else "主人 user 的位置"
         content = ("<p class=meta><a href='/kindle'>书库</a> · %s %.1f%% · 本页点按翻页</p>" % (location_label, pct) +
                    warning + sync_note + nav + density + "<div class=text>" +
                    (html_escape(page_text) if page_text else "本书已读完。") + "</div>" +
@@ -564,3 +564,4 @@ def decorate_page(body):
         with open(os.path.join(assets, filename), "rb") as stream:
             body = body.replace(marker, stream.read(), 1)
     return body
+
