@@ -1,22 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""小书桌身份令牌管理 —— 极简后端
-
-用途：在任何设备上打开一个网页，就能**就地生成一个身份令牌并复制**，
-创建成功时一并显示接入地址与凭据，便于在当前设备完成配置。
-
-设计约束：
-  - 列表可见（只有身份名，没有令牌值）
-  - **创建**要管理员口令
-  - **删除**要管理员口令
-  - 令牌**只在创建响应里出现一次**，之后永不回显
-  - 口令**只存 salt + sha256**，不存明文
-  - 口令**不经过任何人**（首次由管理员在页面上设置）
-
-安全边界：
-  - 只绑 127.0.0.1（外层由 Cloudflare 隧道/Caddy 暴露）
-  - 直接读写 reader-mate 的 data/identities.json —— 该文件本来就是 reader 用户所有
-  - 每次写入前先备份、原子替换
+"""Member management using the existing administrator password and identity store.
+New member metadata and credentials commit together; revocation keeps history.
+Legacy endpoints remain compatible. Never log or list credential values.
 """
 
 import base64
@@ -31,6 +17,15 @@ import stat
 import sys
 import threading
 import time
+from pathlib import Path
+from urllib.parse import urlsplit
+
+# Source checkout, published package, and existing /opt layout.
+_module = Path(__file__).resolve().parent.parent / "core"
+if not _module.is_dir():
+    _module = Path(__file__).resolve().parent.parent / "reader-mate" / "core"
+sys.path.insert(0, os.environ.get("READER_CORE_DIR", str(_module)))
+import member_store
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # ---------- 路径与常量 ----------
@@ -43,6 +38,8 @@ BACKUP_DIR = os.path.join(DATA_DIR, ".token-backups")
 MCP_KEY_FILE = os.environ.get("READER_MCP_PATH_KEY_FILE",
                            "/opt/reader-mate/state/mcp-path-key.txt")
 MCP_PUBLIC_BASE = os.environ.get("READER_MCP_PUBLIC_BASE", "https://reader.example.com/mcp/")
+WEB_PUBLIC_BASE = os.environ.get("READER_WEB_PUBLIC_BASE", "https://reader.example.com/")
+MCP_URL_PUBLIC_BASE = os.environ.get("READER_MCP_URL_PUBLIC_BASE", "")
 WRITE_LOCK = threading.RLock()
 
 HOST = os.environ.get("TOKEN_HOST", "127.0.0.1")
@@ -126,29 +123,18 @@ def check_password(password):
 
 
 def load_identities():
-    """与 reader_server.load_identities 同语义：不存在或损坏 → 空 dict。"""
-    try:
-        with open(IDENTITIES, "r", encoding="utf-8") as f:
-            d = json.load(f)
-        return d if isinstance(d, dict) else {}
-    except Exception:
-        return {}
+    return member_store.read(IDENTITIES)
 
 
-def save_identities(d, why):
-    """先备份、再原子替换。"""
-    os.makedirs(BACKUP_DIR, exist_ok=True)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    if os.path.exists(IDENTITIES):
-        shutil.copy2(IDENTITIES, os.path.join(BACKUP_DIR, "identities.json.bak-%s-%s" % (stamp, why)))
-    tmp = IDENTITIES + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(d, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    # 与既有文件同样的严格权限
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, IDENTITIES)
-    log("identities.json 已更新（%s）" % why)
+def connection_base(channel):
+    if channel in ("mcp", "legacy"):
+        return common_mcp_url()
+    value = WEB_PUBLIC_BASE if channel == "web" else MCP_URL_PUBLIC_BASE
+    parsed = urlsplit(value)
+    if (parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password
+            or parsed.query or parsed.fragment or parsed.path not in ("", "/")):
+        raise ValueError("接入域名未配置或格式无效")
+    return value.rstrip("/") + ("/" if channel == "web" else "/mcp/member/")
 
 
 def new_token():
@@ -179,7 +165,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "token-mcp/0.1"
 
     def log_message(self, fmt, *args):
-        log("%s - %s" % (self.address_string(), fmt % args))
+        log("request completed")  # Never log URLs, request bodies, or credentials.
 
     # --- 工具 ---
 
@@ -222,11 +208,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/status":
             configured = _admin_exists()
             admin_ok = _read_admin() is not None
-            names = sorted(load_identities().keys())
+            try:
+                names = sorted(k for k, v in load_identities().items() if isinstance(v, str))
+                store_error = False
+            except member_store.StoreError:
+                names = []
+                store_error = True
             self._send(200, {
                 "ok": True,
                 "configured": configured,
                 "admin_error": configured and not admin_ok,
+                "store_error": store_error,
                 "identities": names,
             })
             return
@@ -259,36 +251,47 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": self._password_ok(body)})
             return
 
-        if path == "/api/identities":
-            if not _admin_exists():
-                self._send(409, {"ok": False, "error": "还没设置管理员口令"})
-                return
+        if path in ("/api/identities", "/api/members", "/api/members/list", "/api/credentials/revoke"):
             if not self._password_ok(body):
-                self._send(403, {"ok": False, "error": "口令不对"})
-                return
-            name = (body or {}).get("name")
-            if not valid_name(name):
-                self._send(400, {"ok": False, "error": "身份名只能是 1–32 位的字母/数字/_/-"})
-                return
+                return self._send(403, {"ok": False, "error": "管理员口令不正确"})
             try:
-                mcp_url = common_mcp_url()
-            except (OSError, ValueError) as exc:
-                log("通用 MCP URL 不可用：%s" % type(exc).__name__)
-                self._send(503, {"ok": False, "error": "通用 MCP 地址暂不可用，身份未创建"})
-                return
-            with WRITE_LOCK:
-                ids = load_identities()
-                if name in ids:
-                    self._send(409, {"ok": False, "error": "这个身份已存在；要换令牌请先删除它"})
-                    return
-                token = new_token()
-                ids[name] = token
-                save_identities(ids, "add-" + name)
-            # ★ 令牌只在这一条响应里出现
-            self._send(200, {"ok": True, "name": name, "token": token,
-                             "mcp_url": mcp_url,
-                             "note": "令牌只显示这一次，请立刻复制到本机客户端的配置里"})
-            return
+                if path == "/api/members/list":
+                    return self._send(200, {"ok": True, "members": list(member_store.profiles(load_identities()).values())})
+                if path == "/api/credentials/revoke":
+                    if not valid_name(body.get("member_id")) or not isinstance(body.get("credential_id"), str) or not body["credential_id"]:
+                        raise ValueError("需要成员 ID 和凭据 ID")
+                    row = member_store.revoke(IDENTITIES, body["member_id"], body["credential_id"])
+                    return self._send(200, {"ok": True, "member": row})
+                legacy = path == "/api/identities"
+                if legacy and not valid_name(body.get("name")):
+                    raise ValueError("身份名只能是 1–32 位的字母/数字/_/-")
+                kind = "legacy" if legacy else body.get("kind")
+                channel = "legacy" if legacy else body.get("channel")
+                if channel not in ("legacy", "web", "mcp", "mcp-url"):
+                    raise ValueError("接入方式无效")
+                # Validate complete connection instructions BEFORE the sole storage commit.
+                try:
+                    base = connection_base(channel)
+                except (OSError, ValueError):
+                    return self._send(503, {"ok": False, "error": "接入地址暂不可用，成员未创建"})
+                result = member_store.create(IDENTITIES, body.get("name") if legacy else body.get("nickname"),
+                    kind, channel, body.get("name") if legacy else None)
+                url = base + result["token"] if channel == "mcp-url" else base
+                instructions = ({"web": "打开网页，在门禁处输入此令牌。登录后使用此成员的独立进度。",
+                    "mcp": "分别填写 MCP URL 和 Bearer 令牌；先调用 get_calling_guide。",
+                    "legacy": "分别填写 MCP URL 和 Bearer 令牌；旧接入方式继续有效。",
+                    "mcp-url": "仅填写完整 MCP URL，不另填令牌；链接本身就是凭据，请私下保存。"})[channel]
+                result.update(ok=True, name=result["member"]["id"], url=url,
+                              mcp_url=url if channel != "web" else None, instructions=instructions)
+                return self._send(200, result)
+            except FileExistsError as exc:
+                return self._send(409, {"ok": False, "error": str(exc)})
+            except KeyError:
+                return self._send(404, {"ok": False, "error": "成员不存在"})
+            except (member_store.StoreError, OSError):
+                return self._send(503, {"ok": False, "error": "身份存储不可用，未提交更改，请检查备份"})
+            except (ValueError, TypeError):
+                return self._send(400, {"ok": False, "error": "昵称、成员类型或接入方式无效"})
 
         self._send(404, {"ok": False, "error": "没有这个端点"})
 
@@ -309,15 +312,16 @@ class Handler(BaseHTTPRequestHandler):
         if name == "user":
             self._send(409, {"ok": False, "error": "user 是保留的系统身份，不能删除"})
             return
-        with WRITE_LOCK:
-            ids = load_identities()
-            if name not in ids:
-                self._send(404, {"ok": False, "error": "没有这个身份"})
-                return
-            del ids[name]
-            save_identities(ids, "del-" + name)
-        self._send(200, {"ok": True, "name": name})
-        return
+        try:
+            row = member_store.revoke(IDENTITIES, name)
+            self._send(200, {"ok": True, "name": name, "member": row})
+        except KeyError:
+            self._send(404, {"ok": False, "error": "没有这个身份"})
+        except FileExistsError as exc:
+            self._send(409, {"ok": False, "error": str(exc)})
+        except (member_store.StoreError, OSError):
+            self._send(503, {"ok": False, "error": "身份存储不可用，未提交更改"})
+
 
 
 def main():

@@ -82,3 +82,6 @@ sudo -u reader python3 deploy/init-token-bootstrap.py
 ## notes兼容保护
 
 升级前先备份并运行隔离验收。该修复只替换代码，首个正常notes修改会在data/notes-backups保存一份私有原件；不要把它、notes.json.lock或任何生产数据上传Git。无批量迁移，原TXT与进度不改写。损坏存储会返回503并保留原文件，管理员应核查可信副本，不要初始化空库。回滚不能用旧notes覆盖新评论；升级后已有新notes时，旧有损规范化代码也须拒绝回退。保留user不可删除；当前云端缺少其配置仍会拒绝启动，恢复时核对私有备份及原凭据，不能关闭鉴权。详见 [PRESERVATION.md](PRESERVATION.md)。
+
+
+PR4 共读成员管理：管理员可添加人类读者或 Agent、生成独立凭据并撤销。旧 ID 与连接保留；部署配置、兼容存储和回退限制见 [MEMBERS.md](MEMBERS.md)。

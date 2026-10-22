@@ -41,7 +41,7 @@ def record(offset, updated='2026-10-21T12:11:30', legacy=False, **extra):
 async def run():
     with tempfile.TemporaryDirectory() as directory:
         base = Path(directory)
-        for name in ('reader_server.py','mcp_server.py','chapter_index.py','progress_catalog.py','navigation.py','MCP工具标准调用参考_只读.txt'):
+        for name in ('reader_server.py', 'member_store.py','mcp_server.py','chapter_index.py','progress_catalog.py','navigation.py','MCP工具标准调用参考_只读.txt'):
             if (ROOT/name).exists(): shutil.copy(ROOT/name,base/name)
         shutil.copytree(ROOT/'web',base/'web')
         (base/'data').mkdir(); (base/'书库').mkdir(); (base/'state').mkdir()

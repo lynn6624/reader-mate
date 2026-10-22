@@ -51,6 +51,7 @@ def free_port():
 
 with tempfile.TemporaryDirectory() as directory:
     base = pathlib.Path(directory)
+    shutil.copy(ROOT / "member_store.py", base / "member_store.py")
     shutil.copy(ROOT / "reader_server.py", base / "reader_server.py")
     shutil.copy(ROOT / "chapter_index.py", base / "chapter_index.py")
     shutil.copy(ROOT / "navigation.py", base / "navigation.py")
