@@ -148,7 +148,7 @@ with tempfile.TemporaryDirectory() as directory:
                 page.locator("#libTabs [data-tab=overview]").tap()
                 page.wait_for_function("document.querySelectorAll('#overviewList .progressItem').length === 4")
                 labels = page.locator("#overviewList .progressHead span:nth-child(2)").all_text_contents()
-                assert any("op001（001）" in label for label in labels), labels
+                assert any(label == "op001" for label in labels), labels
                 assert any(label == "aru001" for label in labels), labels
                 assert not any(label == "001" for label in labels), labels
                 if with_kindle:
@@ -215,14 +215,15 @@ with tempfile.TemporaryDirectory() as directory:
                 assert not desktop_page.locator("#kindlePairing").is_visible()
                 assert desktop_page.evaluate("""() => [...document.querySelectorAll('#reader mark.multi')]
                     .some(m => m.textContent.includes('你') && m.style.getPropertyValue('--hl-color') === '#d4f0ee')""")
+                assert desktop_page.evaluate("readerLabel('user') === 'user' && readerLabel('op001') === 'op001' && readerLabel('op004') === 'op004' && progressReaderLabel('user') === 'user'")
                 desktop_page.locator("#reader mark.multi").filter(has_text="你").first.click()
                 assert desktop_page.locator("#hlChoices button").count() == 2
-                desktop_page.locator("#hlChoices button").filter(has_text="002").first.click()
-                desktop_page.wait_for_function("document.querySelector('#hlPanelTitle').textContent.startsWith('002')")
-                desktop_page.locator("#hlInput").fill("004在002的划线下留言")
+                desktop_page.locator("#hlChoices button").filter(has_text="user").first.click()
+                desktop_page.wait_for_function("document.querySelector('#hlPanelTitle').textContent.startsWith('user')")
+                desktop_page.locator("#hlInput").fill("Agent在user的划线下留言")
                 desktop_page.locator("#hlSend").click()
                 desktop_page.wait_for_function("""() => document.querySelector('#hlPanelThread')
-                    ?.innerText.includes('004在002的划线下留言')""")
+                    ?.innerText.includes('Agent在user的划线下留言')""")
                 annotations = request("/api/notes/annotations?name=test.txt&highlight_id=" + h002,
                                       "op004")["annotations"]
                 assert len(annotations) == 1 and annotations[0]["author_id"] == "op004"
