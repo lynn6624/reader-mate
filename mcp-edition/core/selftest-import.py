@@ -46,6 +46,7 @@ def main():
     assert metadata == manual
     with tempfile.TemporaryDirectory() as temp:
         base = pathlib.Path(temp)
+        shutil.copy(ROOT / "book_drafts.py", base)
         shutil.copy(ROOT / "member_store.py", base)
         shutil.copy(ROOT / "reader_server.py", base)
         shutil.copy(ROOT / "chapter_index.py", base)

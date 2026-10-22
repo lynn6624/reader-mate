@@ -94,7 +94,7 @@ def unit():
 def integration(browser=True,html_override=None):
     with tempfile.TemporaryDirectory() as folder:
         base=Path(folder)
-        for name in ('reader_server.py', 'member_store.py','chapter_index.py','progress_catalog.py','navigation.py'):shutil.copy(ROOT/name,base/name)
+        for name in ('reader_server.py', 'member_store.py','book_drafts.py','chapter_index.py','progress_catalog.py','navigation.py'):shutil.copy(ROOT/name,base/name)
         shutil.copytree(ROOT/'web',base/'web');(base/'data').mkdir();(base/'书库').mkdir()
         if html_override:shutil.copyfile(html_override,base/'web/reader.html')
         (base/'书库/test.txt').write_text(BOOK,encoding='utf-8')

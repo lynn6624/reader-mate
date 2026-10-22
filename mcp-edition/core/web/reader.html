@@ -464,6 +464,16 @@
   #tocAdmin summary{min-height:36px;cursor:pointer}
   #tocAdmin .btn{margin:5px 0;white-space:normal}
   #tocPreview{white-space:pre-wrap;word-break:break-word}
+  #draftBanner{position:fixed;top:54px;left:0;right:0;z-index:22;padding:8px 14px;background:var(--card);color:var(--accent);font:14px/1.5 system-ui;border-bottom:1px solid var(--line)}
+  body.draft-mode #view{top:calc(54px + var(--draft-banner-h,70px))}
+  #btnDraft{position:fixed;bottom:14px;left:12px;z-index:25;min-height:44px}
+  #draftBanner[hidden],.editOverlay[hidden],#btnDraft[hidden],#hlMenu .m[hidden]{display:none}
+  .editOverlay{position:fixed;inset:0;z-index:90;background:rgba(40,32,24,.4);display:flex;align-items:center;justify-content:center;padding:12px}
+  .editCard{width:min(560px,100%);max-height:90dvh;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;font:15px/1.6 system-ui}
+  .editCard h2{font-size:18px;margin:0 0 8px}.editCard label{display:block;margin-top:10px}
+  .editCard textarea,.editCard input,.editCard select{width:100%;font:16px/1.7 system-ui;color:var(--fg);background:var(--bg);border:1px solid var(--line);padding:8px;box-sizing:border-box}
+  .editCard textarea{min-height:130px;resize:vertical}.editCard button{min-height:44px;margin-top:10px}
+  .chapter-edit{min-width:44px;min-height:44px;border:0;color:var(--accent);background:none}
 </style>
 </head>
 <body>
@@ -481,6 +491,7 @@
   </div>
 </section>
 
+  <button class="ibtn" id="btnDraft" hidden title="打开管理员草稿">草稿</button>
 <div id="bar">
   <button class="ibtn" id="btnLib" title="书库">☰<span class="lbl"> 书库</span></button>
   <button class="ibtn" id="btnToc" title="本书章节目录" aria-label="本书章节目录">目录</button>
@@ -498,6 +509,7 @@
     <button class="ibtn" id="btnTheme" title="换主题">☾</button>
   </div>
 </div>
+<div id="draftBanner" hidden role="status">草稿预览 · 自动保存选区编辑 · 正式阅读版本仍在使用 <button class="btn" id="exitDraft">返回正式版</button></div>
 <div id="pbar"><i></i></div>
 <button id="btnKeepPosition" type="button" hidden>将当前位置设为续读点</button>
 
@@ -600,7 +612,19 @@
 <div id="toast"></div>
 <div id="drop">松手，我把 txt 收进书库</div>
 
+<section id="draftEditDialog" class="editOverlay" hidden role="dialog" aria-modal="true" aria-labelledby="draftEditTitle"><div class="editCard">
+<h2 id="draftEditTitle">编辑草稿选中文字</h2><div class="hint">输入后自动保存；留空即删除选区。一次最多4000 UTF-16单位。</div>
+<label for="draftReplacement">替换为</label><textarea id="draftReplacement"></textarea>
+<div id="draftEditStatus" role="status"></div><button class="btn" id="draftDelete">删除这段文字</button> <button class="btn" id="draftRetry">立即保存 / 重试</button> <button class="btn" id="draftEditClose">完成</button>
+</div></section>
+<section id="chapterDialog" class="editOverlay" hidden role="dialog" aria-modal="true" aria-labelledby="chapterDialogTitle"><div class="editCard">
+<h2 id="chapterDialogTitle">设置章节</h2><label for="chapterTitle">章节标题</label><input id="chapterTitle" maxlength="160">
+<label for="chapterParent">上级章节</label><select id="chapterParent"></select>
+<label for="chapterResolve">恢复待核对的草稿目录项（可选）</label><select id="chapterResolve"></select>
+<div id="chapterStatus" role="status"></div><button class="btn primary" id="chapterSave">保存章节</button> <button class="btn" id="chapterClose">取消</button>
+</div></section>
 <div id="hlMenu">
+  <button class="m" data-act="edit" hidden>编辑草稿</button><button class="m" data-act="chapter" hidden>设为章节</button>
   <button class="m" data-act="line">划线</button>
   <span class="sep"></span>
   <button class="m" data-act="note">写批注</button>
@@ -950,13 +974,13 @@ function progressDirty(book, data){
     +(saved.tts_offset || 0) !== data.tts_offset;
 }
 function scheduleSave(){
-  if (state.temporaryView || saveBlocked || navigationOpen) return;
+  if (state.book?.isDraft || state.temporaryView || saveBlocked || navigationOpen) return;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveNow, 1200);
 }
 async function saveNow(listeningOnly = false){
   clearTimeout(saveTimer); saveTimer = null;
-  if (!state.book || saveBlocked || navigationOpen || (state.temporaryView && !listeningOnly)) return;
+  if (!state.book || state.book.isDraft || saveBlocked || navigationOpen || (state.temporaryView && !listeningOnly)) return;
   if (saveInFlight){
     saveQueued = true;
     saveQueuedListening = saveQueuedListening || listeningOnly;
@@ -1000,10 +1024,10 @@ async function saveNow(listeningOnly = false){
 function setTemporaryView(active){
   state.temporaryView = !!active;
   if (active){ clearTimeout(saveTimer); saveTimer = null; }
-  $("#btnKeepPosition").hidden = !active;
+  $("#btnKeepPosition").hidden = !active || !!state.book?.isDraft;
 }
 window.addEventListener("beforeunload", () => {
-  if (!state.book || state.temporaryView || saveBlocked || saveInFlight || navigationOpen) return;
+  if (!state.book || state.book.isDraft || state.temporaryView || saveBlocked || saveInFlight || navigationOpen) return;
   try {
     const data = payload();
     if (!progressDirty(state.book, data)) return;
@@ -1018,6 +1042,7 @@ window.addEventListener("beforeunload", () => {
   } catch (e) {}
 });
 $("#btnKeepPosition").addEventListener("click", () => {
+  if(state.book?.isDraft)return;
   if (saveBlocked){ toast("进度已在别处更新，请刷新后再设置续读点"); return; }
   setTemporaryView(false);
   saveNow();
@@ -1843,6 +1868,7 @@ function switchWhoFromForm(){
 }
 
 async function openBook(name){
+  if(!await closeDraftEditor())return;
   // 切书之前先停朗读（不 toast，避免干扰"打开中…"）
   if (typeof ttsStopInternal === "function" && tts.state !== "idle") ttsStopInternal(true);
   toast("打开中…", 900);
@@ -1893,6 +1919,7 @@ async function openBook(name){
   state.ttsOffset = (prog && prog.tts_offset) || 0;
   ttsShowResumeHint();
   closePanels();
+  refreshDraftControls();
 }
 
 function installReadingWindow(data, offset){
@@ -1906,10 +1933,10 @@ function installReadingWindow(data, offset){
   updateBar();
 }
 async function fetchReadingWindow(book,offset){
-  const r=await fetchAuth('/api/book?'+new URLSearchParams({name:book.name,window:'1',offset:String(offset)}));
+  const r=await fetchAuth((book.isDraft?'/api/draft?':'/api/book?')+new URLSearchParams({name:book.name,window:'1',offset:String(offset)}));
   const j=await r.json();
   if(!r.ok || !j.ok) throw Error(j.error||'读取正文失败');
-  if(j.book_revision!==book.book_revision) throw Error('正文已变化，请重新打开后核对位置');
+  if(j.book_revision!==book.book_revision || (book.isDraft && j.draft_revision!==book.draft_revision)) throw Error('正文或草稿已变化，请重新打开后核对位置');
   return j;
 }
 async function loadReadingWindow(offset){
@@ -1946,6 +1973,7 @@ function showEmpty(){
 
 /* ---------------- 搜索 ---------------- */
 async function runSearch(q){
+  if(state.book?.isDraft){toast("草稿预览请用目录跳转；全书搜索在正式版使用");return;}
   const hits = $("#hits");
   if (!state.book){ hits.innerHTML = '<div class="hint">先打开一本书再搜。</div>'; return; }
   if (!q){ hits.innerHTML = '<div class="hint">输入关键词，回车搜全书。</div>'; return; }
@@ -2057,7 +2085,7 @@ async function tocPage(reset=false){
   if(request.name!==book.name)throw Error('书目已切换，请重新打开目录');
   if(request.loading)return request.loading;
   const operation=(async()=>{
-  const r=await fetchAuth('/api/navigation?'+new URLSearchParams({name:book.name,offset:String(request.next||0),limit:'200'}));
+  const r=await fetchAuth((book.isDraft?'/api/draft/navigation?':'/api/navigation?')+new URLSearchParams({name:book.name,offset:String(request.next||0),limit:'200'}));
   const j=await r.json();
   if(state.book!==book || tocState!==request) return;
   if(!r.ok || !j.ok) throw Error(j.error||'读取目录失败');
@@ -2065,7 +2093,7 @@ async function tocPage(reset=false){
   if(request.revision!==null && request.revision!==j.revision) throw Error('目录已更新，请刷新目录');
   request.revision=j.revision;request.next=j.next_offset;request.status=j.status;request.total=j.total;
   request.truncated=!!j.truncated;
-  request.items.push(...j.items);$('#tocAdmin').hidden=!j.can_edit;
+  request.items.push(...j.items);request.can_edit=j.can_edit;request.issues=j.chapter_issues||[];$('#tocAdmin').hidden=!j.can_edit||!!book.isDraft;
   renderToc();
   })();
   request.loading=operation;
@@ -2078,6 +2106,7 @@ function renderToc(){
     tocState.status==='invalid_metadata'?'目录元数据异常，请管理员检查。':
     tocState.total?'共 '+tocState.total+' 项 · 跳转仅临时查看，可另设为续读点。':'暂无可可靠识别的章节，可继续正常阅读。';
   if(tocState.truncated)hint.textContent+=' 自动目录已达到8000项上限，请管理员检查。';
+  if(tocState.issues?.length){hint.textContent+=' · '+tocState.issues.length+' 项章节需重新定位，已完整保留。可选中正文重新设章并关联待核对项。';}
   box.appendChild(hint);
   const byId=new Map(tocState.items.map(x=>[x.id,x])),parents=new Set(tocState.items.map(x=>x.parent_id).filter(Boolean));
   let count=0;
@@ -2101,7 +2130,14 @@ function renderToc(){
       if(tts.state!=='idle')ttsStopInternal(true);
       await jumpTo(item.offset,'',true);closePanels();
     });
-    row.append(toggle,button);box.appendChild(row);
+    row.append(toggle,button);
+    if(tocState.can_edit){
+      const edit=document.createElement('button');edit.className='chapter-edit';edit.textContent='改';edit.setAttribute('aria-label','修改章节'+item.title);
+      edit.onclick=()=>openChapterEditor(null,item).catch(e=>toast(e.message));
+      const del=document.createElement('button');del.className='chapter-edit';del.textContent='删';del.setAttribute('aria-label','删除章节'+item.title);
+      del.onclick=()=>deleteChapter(item).catch(e=>toast(e.message));row.append(edit,del);
+    }
+    box.appendChild(row);
   }
   if(tocState.page>0){
     const previous=document.createElement('button');previous.className='btn';previous.type='button';previous.textContent='上一页目录';
@@ -2333,7 +2369,9 @@ function ensureHlMenu(){
     btn.addEventListener("click", e => {
       const act = btn.dataset.act;
       if (!hlSel) return;
-      if (act === "line") doHighlight("line");
+      if (act === "edit") openDraftEditor(hlSel.info).catch(e=>toast(e.message));
+      else if (act === "chapter") openChapterEditor(hlSel.info).catch(e=>toast(e.message));
+      else if (act === "line") doHighlight("line");
       else if (act === "note") doHighlight("note");
       else if (act === "copy") doCopy();
       else if (act === "read") ttsReadFromSelection();
@@ -2346,6 +2384,10 @@ function hideHlMenu(){ if (hlMenu){ hlMenu.classList.remove("on"); } hlSel = nul
 function showHlMenu(){
   if (!hlSel || !state.book){ hideHlMenu(); return; }
   const m = ensureHlMenu();
+  for(const btn of m.querySelectorAll('[data-act]')){
+    const act=btn.dataset.act;
+    btn.hidden=['edit','chapter'].includes(act)?!canManageLibrary:!!state.book.isDraft && ['line','note','read'].includes(act);
+  }
   const rect = hlSel.rect;
   m.classList.add("on");
   // 水平居中
@@ -2425,6 +2467,7 @@ function selectionInfo(range){
 
 /* ---- 划线 ---- */
 async function doHighlight(kind){
+  if(state.book?.isDraft)return;
   if (!hlSel || !state.book) return;
   const info = hlSel.info;
   if (!info) return;
@@ -2544,6 +2587,7 @@ function unwrapGroup(groupId){
 
 /* ---- 已有划线渲染 ---- */
 async function loadHighlights(name){
+  if(state.book?.isDraft)return;
   if (!name){ notesCache.list = []; return; }
   if (notesCache.name !== name){
     notesCache.name = name;
@@ -2575,7 +2619,7 @@ async function loadHighlights(name){
       offset = j.next_offset;
     } while (offset !== null && offset !== undefined);
     // 拉回时用户可能已经切到别的书——只接受当前书的
-    if (!state.book || state.book.name !== name){ return; }
+    if (!state.book || state.book.isDraft || state.book.name !== name){ return; }
     const notesError = document.getElementById("errbar");
     if (notesError && notesError.dataset.kind === "notes") notesError.remove();
     if (consistent && firstRevision && notesCache.revision === firstRevision &&
@@ -2655,7 +2699,7 @@ function paintHighlightSegment(segIdx, hs){
   el.innerHTML = html;
 }
 function renderHighlightsIntoDOM(){
-  if (!state.book || !state.segs.length) return;
+  if (!state.book || state.book.isDraft || !state.segs.length) return;
   const hs = visibleHighlights();
   for (let i = 0; i < state.rendered; i++) paintHighlightSegment(i, hs);
 }
@@ -3340,7 +3384,7 @@ async function bootReader(){
 // 共读刷新：编辑/选中文字时不扰动页面；新内容刷新高亮和摘抄索引。
 let coReadBusy = false;
 setInterval(async () => {
-  if (coReadBusy || document.hidden || !state.book) return;
+  if (coReadBusy || document.hidden || !state.book || state.book.isDraft) return;
   const a = document.activeElement;
   if (a && (a.matches("input,textarea") || a.isContentEditable)) return;
   if (String(window.getSelection() || "")) return;
@@ -3402,6 +3446,7 @@ async function startReaderGate(){
   });
 }
 
+/* DRAFT_EDITOR_JS */
 startReaderGate();
 </script>
 </body>
