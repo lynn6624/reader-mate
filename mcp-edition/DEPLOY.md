@@ -47,11 +47,11 @@ sudo -u reader python3 deploy/init-token-bootstrap.py
 
 ### Kindle 设备配对（安装可选扩展后）
 
-主人 `user` 用现有身份令牌进入阅读页，在书库抽屉底部生成配对链接；只在受信任的 Kindle 浏览器打开并点击确认。GET 只显示表单，POST 才一次性兑换。设备 Cookie 为 `Secure`、`HttpOnly`、`SameSite=Lax`，有效期 90 天；服务端只保存随机会话密钥的摘要。主人可列出并撤销 Kindle 会话，设备不能凭 Cookie 创建新配对、导入或删书、读取审计。设备的进度和批注仍归 `user（002）`，MCP 的 Bearer 令牌不变。
+主人 `user` 用现有身份令牌进入阅读页，在书库抽屉底部生成配对链接；只在受信任的 Kindle 浏览器打开并点击确认。GET 只显示表单，POST 才一次性兑换。设备 Cookie 为 `Secure`、`HttpOnly`、`SameSite=Lax`，有效期 90 天；服务端只保存随机会话密钥的摘要。主人可列出并撤销 Kindle 会话，设备不能凭 Cookie 创建新配对、导入或删书、读取审计。设备的进度和批注仍归 `user`，MCP 的 Bearer 令牌不变。
 
 隔离验证运行 `python3 core/selftest-kindle.py`、`python3 core/selftest-cloud.py` 和浏览器测试。上线前备份 `core/reader_server.py` 与 `core/web/reader.html`；先核对哈希，再原子替换并重启 `reader-web.service`。新文件 `core/data/kindle_auth.json` 在首次生成链接时懒创建，权限应为 0600，目录归 `reader` 且为 0700；无需数据库迁移。代码回滚时保留此文件与其他数据；旧版忽略设备会话，恢复新版代码后会话可继续使用。若需立即使所有 Kindle 会话失效，应先在主人页面逐台撤销。
 
-已配对设备访问 Web 根路径时自动转到 `/kindle`；该页不依赖 JavaScript、滑动或固定高度滚动容器，使用大触屏按钮翻上一页/下一页。它从 `user（002）` 的现有 UTF-16 进度接续；每次点按通过签名表单提交到 `/kindle/page`，复用 `POST /api/progress` 的正文版本与修订号检查，冲突时不覆盖手机的新进度。旧书正文变化时显示定位异常，不会静默移到另一段。目录可按书名搜索；正文只按页读取，内存里最多保留两本书的稀疏定位索引，不另建书籍副本或进度表。完整原阅读页可通过 `/?full=1&kindle=1` 手动打开。KPW6 是否能舒适点按翻页需真机验收。
+已配对设备访问 Web 根路径时自动转到 `/kindle`；该页不依赖 JavaScript、滑动或固定高度滚动容器，使用大触屏按钮翻上一页/下一页。它从 `user` 的现有 UTF-16 进度接续；每次点按通过签名表单提交到 `/kindle/page`，复用 `POST /api/progress` 的正文版本与修订号检查，冲突时不覆盖手机的新进度。旧书正文变化时显示定位异常，不会静默移到另一段。目录可按书名搜索；正文只按页读取，内存里最多保留两本书的稀疏定位索引，不另建书籍副本或进度表。完整原阅读页可通过 `/?full=1&kindle=1` 手动打开。KPW6 是否能舒适点按翻页需真机验收。
 
 2026-10-16 页面适配补丁：当前 Kindle 正文字号与页长绑定为常规 18px／440 字、大字 20px／340 字、特大 22px／280 字。KPW6 真机反馈常规字号下 440 字合适，但字号放大后同样页长会溢出；因此放大时自动缩短。标题、导航、字数选项和冲突提示保持紧凑，只有正文放大。该 GET 选项不保存进度，翻页表单会签名并保留所选档位；旧的 360／400 字链接回落到当前默认值。完整阅读页为已配对设备显示固定的「返回 Kindle 阅读」链接，即使 Kindle 不执行 JavaScript 也可返回；原阅读器脚本会清理临时 `kindle=1` 与 `full=1` 参数。部署本版只需替换 `core/reader_server.py`，备份、原子替换并重启 `reader-web.service`。无需数据迁移；保留 `core/data/`、书库及会话文件。
 
@@ -65,7 +65,7 @@ sudo -u reader python3 deploy/init-token-bootstrap.py
 
 新增隔离验收可运行 `python3 core/selftest-cloud.py`，在具备 Playwright 浏览器依赖的环境运行 `python3 core/selftest-browser.py` 与 `node core/selftest-progress-ui.js`。检查手机和桌面的进度显示、临时跳转不写盘、正文变更后拒绝错位续读，以及匿名请求被拒绝。`core/selftest-browser.py` 的 Chrome 路径是 Windows 测试机示例，Linux 上需按环境调整。
 
-进度页若要让身份昵称与令牌管理页对齐，只需替换 `core/web/reader.html`。例如 `op001（001）` 中前者是真实身份 ID，后者是阅读昵称；这项显示修复不改进度或身份数据，也无需重启会按请求读取 HTML 的 Web 进程。替换前备份原页面，失败时仅恢复该页面并重新读取网页即可。
+公开版默认显示服务端确认的真实身份 ID，不再将 user/op001/op004 映射成特定部署者的阅读昵称。已有部署可仅备份并替换同版 `core/web/reader.html`，刷新页面即可；无需重建令牌或修改数据。若仅回退显示修复，恢复原页面即可。不要跨版本替换整份数据目录。
 
 阅读页先通过 `/api/auth-check` 验证现有身份令牌，验证成功后才启动阅读器并读取书架；没有令牌或令牌失效时只显示身份令牌输入门。它复用现有身份令牌，不另设访客口令，也不改变 API、MCP 的鉴权规则。`/api/ping` 仍供健康检查使用，不返回书籍或共读数据。
 
@@ -78,3 +78,4 @@ sudo -u reader python3 deploy/init-token-bootstrap.py
 ### 2026-10-20 手机选区朗读修复
 
 本版 `core/web/reader.html` 将选区朗读按句接续，修复长段落时只读第一句、跟随滚动不前进的问题。替换前备份原页面，运行 `python3 core/selftest-tts.py`（需要 Playwright 与 Chrome）及原有浏览器/云端测试。部署只需原子替换页面并刷新浏览器，不需要重启服务或迁移数据。回滚仅恢复此前备份的页面；保留书库、进度、批注与令牌。
+

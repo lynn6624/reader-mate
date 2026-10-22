@@ -47,6 +47,7 @@ def main():
     with tempfile.TemporaryDirectory() as temp:
         base = pathlib.Path(temp)
         shutil.copy(ROOT / "reader_server.py", base)
+        shutil.copy(ROOT / "chapter_index.py", base)
         shutil.copy(ROOT / "progress_catalog.py", base)
         shutil.copytree(ROOT / "web", base / "web")
         shutil.copytree(ROOT / "tools", base / "tools")

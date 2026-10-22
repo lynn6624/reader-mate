@@ -809,9 +809,12 @@ const esc = s => s.replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",
 const CHAP_RE = /^(第\s*[0-9零一二三四五六七八九十百千万两]+\s*[章节回卷篇幕]|Chapter\s+\d+|CHAPTER\s+\d+)[^\n]{0,40}$/;
 const LONG_SEG = 1200;
 
-function splitSegments(text){
+function splitSegments(text, structure){
   const segs = [];
   let pos = 0, chap = "";
+  const indexed = structure && Array.isArray(structure.headings) && Array.isArray(structure.toc_regions);
+  const headings = indexed ? structure.headings : [];
+  let headingCursor = 0;
   const lines = text.split("\n");
   for (const line of lines){
     const lineStart = pos;
@@ -819,7 +822,14 @@ function splitSegments(text){
     const t = line.trim();
     if (!t) continue;
     const lead = line.length - line.trimStart().length;
-    if (CHAP_RE.test(t)) chap = t.slice(0, 40);
+    if (indexed){
+      while (headingCursor < headings.length && headings[headingCursor].start <= lineStart + lead){
+        chap = headings[headingCursor++].title;
+      }
+      const toc = structure.toc_regions.some(r => r.start <= lineStart + lead && lineStart + lead < r.end);
+      if (toc) chap = "目录";
+      else if (!headingCursor) chap = "";
+    } else if (CHAP_RE.test(t)) chap = t.slice(0, 40); // Legacy server without an index.
     if (t.length > LONG_SEG){
       for (let i = 0; i < t.length; i += LONG_SEG){
         segs.push({
@@ -1028,7 +1038,7 @@ function createSpeechSynthesisEngine(){
   const SYN = window.speechSynthesis;
   // 「当前这句」的引用：cancel() 之后，被取消的 utterance 仍然会 fire onend/onerror。
   // 所以回调里必须确认「我还是当前这句」，否则那个迟到的回调会把状态推到下一段——
-  // 表现就是：滚动条跳了、语音没跳、同一段被念两遍（2026-09-30 002 报的 bug）。
+  // 表现就是：滚动条跳了、语音没跳、同一段被念两遍（历史浏览器兼容问题）。
   let cur = null;
   // 一些浏览器在首次 getVoices() 时还没异步加载完；onvoiceschanged 触发后再补一次
   let cachedVoices = [];
@@ -1077,7 +1087,7 @@ function createSpeechSynthesisEngine(){
   };
 }
 /* 云端嗓子失败 → 自动切回内置嗓子，并把原因**说出来**（绝不许静默无声：
-   002 踩过一次，整本书"念"完却一点声音都没有）。 */
+   曾出现此问题，整本书"念"完却一点声音都没有）。 */
 let _ttsFallbackOnce = false;
 function backendTtsFailed(msg){
   if (ttsMode === "backend") ttsMode = "system";
@@ -1370,7 +1380,7 @@ function ttsReadFromSelection(){
   const segIdx = hlSel.info.startSegIdx;
   const seg = state.segs[segIdx];
   if (!seg){ toast("选区没有命中段落"); return; }
-  // 从「最近停顿标点之后」开始念（002 定的规则）：第一句永远是完整的句子，不会念半截。
+  // 从「最近停顿标点之后」开始念（保留完整句子的规则）：第一句永远是完整的句子，不会念半截。
   const local = ttsPunctStart(seg.text, hlSel.info.startLocal || 0);
   // 静默停掉（不要 toast「已停止」再 toast「开始朗读」），然后从该处起念
   if (tts.state !== "idle") ttsStopInternal(true);
@@ -1792,7 +1802,7 @@ async function openBook(name){
   state.book = Object.assign({}, j, { progress: prog, chars: j.text.length });
   saveBlocked = false;
   setTemporaryView(false);
-  state.segs = splitSegments(j.text);
+  state.segs = splitSegments(j.text, j.chapter_index);
   state.els = []; state.rendered = 0; state.currentSeg = 0;
   reader.innerHTML = "";
   $("#bkTitle").textContent = j.name.replace(/\.txt$/i, "");
@@ -2341,7 +2351,7 @@ function highlightColor(author){
   return otherHlColors[n % otherHlColors.length];
 }
 function readerLabel(author){
-  return author === "user" ? "002" : author === "op001" ? "001" : author === "op004" ? "004" : author;
+  return String(author || "历史身份");
 }
 function progressReaderLabel(readerId){
   const alias = readerLabel(readerId);
@@ -3125,3 +3135,4 @@ startReaderGate();
 </script>
 </body>
 </html>
+

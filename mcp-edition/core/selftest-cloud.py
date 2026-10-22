@@ -16,7 +16,7 @@ def port():
 async def run():
     with tempfile.TemporaryDirectory() as d:
         base = pathlib.Path(d)
-        for filename in ('reader_server.py', 'mcp_server.py', 'progress_catalog.py'):
+        for filename in ('reader_server.py', 'mcp_server.py', 'chapter_index.py', 'progress_catalog.py'):
             shutil.copy(ROOT / filename, base / filename)
         guide_name = 'MCP工具标准调用参考_只读.txt'
         shutil.copy(ROOT / guide_name, base / guide_name)
@@ -46,7 +46,7 @@ async def run():
                    READER_MCP_004_KEY_FILE=str(chatgpt_key_file))
         logs = open(base / 'test.log', 'w+')
         processes = [subprocess.Popen([sys.executable, str(base / f)], env=env, stdout=logs, stderr=logs)
-                     for f in ('reader_server.py', 'mcp_server.py', 'progress_catalog.py')]
+                     for f in ('reader_server.py', 'mcp_server.py')]
         try:
             async with httpx.AsyncClient(trust_env=False) as client:
                 for _ in range(100):

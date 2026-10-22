@@ -26,6 +26,7 @@ async function freePort() {
 
 async function main() {
   fs.copyFileSync(path.join(root, 'reader_server.py'), path.join(temp, 'reader_server.py'));
+  fs.copyFileSync(path.join(root, 'chapter_index.py'), path.join(temp, 'chapter_index.py'));
   fs.copyFileSync(path.join(root, 'progress_catalog.py'), path.join(temp, 'progress_catalog.py'));
   fs.cpSync(path.join(root, 'web'), path.join(temp, 'web'), { recursive: true });
   fs.mkdirSync(path.join(temp, 'data'));
@@ -98,9 +99,9 @@ async function main() {
       await page.locator('#libTabs [data-tab=overview]').click();
       await page.waitForFunction(() => document.querySelectorAll('#overviewList .progressItem').length === 4);
       const cards = await page.locator('#overviewList .progressItem').allTextContents();
-      if (!cards.some(text => text.includes('002') && text.includes('《other》')) ||
+      if (!cards.some(text => text.includes('user') && text.includes('《other》')) ||
           !cards.some(text => text.includes('004') && text.includes('《test》')) ||
-          !cards.some(text => text.includes('op001（001）') && text.includes('暂无记录')) ||
+          !cards.some(text => text.includes('op001') && text.includes('暂无记录')) ||
           !cards.some(text => text.includes('aru001') && text.includes('暂无记录')))
         throw new Error('overview did not aggregate latest book per reader');
       const afterOverview = await request('/api/reading-progress?name=other.txt');
