@@ -26,6 +26,7 @@ async function freePort() {
 
 async function main() {
   fs.copyFileSync(path.join(root, 'reader_server.py'), path.join(temp, 'reader_server.py'));
+  fs.copyFileSync(path.join(root, 'chapter_index.py'), path.join(temp, 'chapter_index.py'));
   fs.cpSync(path.join(root, 'web'), path.join(temp, 'web'), { recursive: true });
   fs.mkdirSync(path.join(temp, 'data'));
   fs.mkdirSync(path.join(temp, '书库'));

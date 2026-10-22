@@ -32,6 +32,8 @@ from email.utils import formatdate
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from html import escape as html_escape
 from http.cookies import SimpleCookie
+from chapter_index import (INDEX_VERSION as CHAPTER_INDEX_VERSION,
+                           index_for_text, chapter_at as indexed_chapter_at, public_index)
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 BOOKS_DIR = os.path.join(BASE, "书库")
@@ -392,6 +394,12 @@ def progress_view(record: dict, reader_id: str, text: str, book_revision: str) -
     if position:
         out.setdefault("paragraph_idx", position[0])
         out.setdefault("char_offset", position[1])
+        # Old labels were persisted by an unversioned backward regex scan.
+        # Resolve metadata at the existing offset; never move/re-save a reader here.
+        if "offset" in record and status != "content_changed":
+            chapter = indexed_chapter_at(index_for_text(text, book_revision), offset)
+            out.update(chapter=chapter["title"], chapter_index_version=CHAPTER_INDEX_VERSION,
+                       chapter_location_status=chapter["region"])
     out["location_status"] = status
     return out
 
@@ -782,25 +790,13 @@ def _note_location(h, book_text, current_hash):
 _CHAPTER_RE = re.compile(r"^(第\s*[0-9零一二三四五六七八九十百千万两]+\s*[章节回卷篇幕]|Chapter\s+\d+|CHAPTER\s+\d+)[^\n]{0,40}$")
 
 
-def _chapter_at(book_text, start):
-    prefix = book_text.encode("utf-16-le")[:start * 2].decode("utf-16-le")
-    for line in reversed(prefix.splitlines()):
-        title = line.strip()
-        if _CHAPTER_RE.match(title):
-            return title[:40]
-    return ""
+def _chapter_at(book_text, start, revision=None):
+    return indexed_chapter_at(index_for_text(book_text, revision), start)["title"][:CHAPTER_MAX]
 
 
 def _chapter_before_index(book_text, index):
-    """Find the last chapter heading without copying the preceding whole book."""
-    cursor = index
-    while cursor > 0:
-        line_start = book_text.rfind("\n", 0, cursor - 1) + 1
-        title = book_text[line_start:cursor].strip()
-        if _CHAPTER_RE.match(title):
-            return title[:40]
-        cursor = line_start
-    return ""
+    """Compatibility helper for callers holding a Python text index."""
+    return _chapter_at(book_text, len(book_text[:index].encode("utf-16-le")) // 2)
 
 
 def load_notes() -> dict:
@@ -1309,7 +1305,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         return self._json({"ok": True, "name": name, "text": text,
                            "book_revision": book_revision,
                            "chars": len(text), "progress": prog,
-                           "by_who": by_who})
+                           "by_who": by_who,
+                           "chapter_index": public_index(index_for_text(text, book_revision))})
 
     def _api_reading_progress(self):
         q = self._query()
@@ -1330,7 +1327,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         # Only legacy entries need a full decode to verify their old anchor.
         entries_to_check = [v for v in by_who.values() if isinstance(v, dict) and v]
         need_text = any(not v.get("book_revision") or
-                        "paragraph_idx" not in v or "char_offset" not in v
+                        "paragraph_idx" not in v or "char_offset" not in v or
+                        v.get("chapter_index_version") != CHAPTER_INDEX_VERSION
                         for v in entries_to_check)
         text = read_text(p) if need_text else None
         if (q.get("all") or [""])[0] == "1":
@@ -1603,7 +1601,9 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                 "offset": offset,
                 "percent": offset / units if units else 0,
                 "chars": units,
-                "chapter": _chapter_before_index(text, text_index),
+                "chapter": _chapter_at(text, offset, book_revision),
+                "chapter_index_version": CHAPTER_INDEX_VERSION,
+                "chapter_location_status": indexed_chapter_at(index_for_text(text, book_revision), offset)["region"],
                 "anchor": re.sub(r"\s+", " ", text[text_index:text_index + 40]),
                 "tts_offset": tts_offset,
                 "updated": now_iso(),

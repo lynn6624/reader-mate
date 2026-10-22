@@ -26,6 +26,7 @@ def free_port():
 with tempfile.TemporaryDirectory() as directory:
     base = pathlib.Path(directory)
     shutil.copy(ROOT / "reader_server.py", base / "reader_server.py")
+    shutil.copy(ROOT / "chapter_index.py", base / "chapter_index.py")
     shutil.copytree(ROOT / "web", base / "web")
     with_kindle = (ROOT / "extensions" / "kindle.py").exists()
     if with_kindle:
