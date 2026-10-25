@@ -1388,6 +1388,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                 return self._api_kindle_sessions()
             if path == "/api/book":
                 return self._api_book()
+            if path in ("/api/proposals", "/api/proposals/preview"):
+                return self._api_proposals()
             if path in ("/api/draft", "/api/draft/navigation", "/api/draft/start", "/api/draft/edit", "/api/draft/chapter", "/api/chapter"):
                 return self._api_draft()
             if path == "/api/navigation":
@@ -1494,6 +1496,10 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             try:
                 with open(os.path.join(BASE,'web','editor.js'),'rb') as f:body=body.replace(b'/* DRAFT_EDITOR_JS */',f.read())
             except OSError:return self._err('找不到草稿界面脚本 web/editor.js',500)
+        if b'/* REVISION_REVIEW_JS */' in body:
+            try:
+                with open(os.path.join(BASE,'web','review.js'),'rb') as f:body=body.replace(b'/* REVISION_REVIEW_JS */',f.read())
+            except OSError:return self._err('找不到审批界面脚本 web/review.js',500)
         if KINDLE_INSTALLED:
             body = kindle_extension.decorate_page(body)
         if self._kindle_cookie_only():
@@ -1807,6 +1813,117 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         except drafts.DraftError as exc:return self._err(str(exc),exc.status)
         except (ValueError,TypeError,UnicodeError) as exc:return self._err(str(exc) or '编辑参数无效',400)
 
+    def _api_proposals(self):
+        import book_drafts as drafts
+        import navigation as nav
+        import revision_proposals as proposals
+        if self._kindle_cookie_only():
+            return self._err('设备阅读会话不能管理修订建议',403)
+        actor = resolve_who(None, self._who_token())
+        if not actor:
+            return self._err('身份未授权',403)
+        admin = actor == 'user'
+        route = urllib.parse.urlparse(self.path).path
+        try:
+            query = self._query()
+            if self.command == 'GET':
+                data = {k:v[0] for k,v in query.items()}
+            else:
+                if int(self.headers.get('Content-Length') or 0) > 64*1024:
+                    return self._err('修订请求上限64KB',413)
+                data = json.loads(self._body().decode('utf-8'))
+            if not isinstance(data,dict):raise ValueError('修订参数无效')
+            name = data.get('name')
+            if not isinstance(name,str) or safe_name(name)!=name:raise ValueError('完整书名无效')
+            if name == REFERENCE_BOOK_NAME:return self._err('调用参考为只读',403)
+            path = book_path(name)
+            if not os.path.isfile(path) or os.path.islink(path):return self._err('书库里没有这本书',404)
+            if route in ('/api/proposals/review','/api/proposals/preview') and not admin:
+                return self._err('仅管理员可预览草稿及审批建议',403)
+            target = drafts.path_for(DATA_DIR,name)
+            target.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+            with _lock, member_store.locked(str(target)):
+                queue = proposals.load(DATA_DIR,name)
+                metadata = drafts.read_metadata(DATA_DIR,name)
+                receipt_map = proposals.receipts(metadata)
+                draft_revision = metadata['revision'] if metadata else 0
+                if route == '/api/proposals':
+                    offset = int(data.get('offset',0));limit = int(data.get('limit',20))
+                    status = data.get('status','')
+                    if offset<0 or not 1<=limit<=50 or status not in ('',*proposals.STATES):
+                        raise ValueError('建议筛选或分页参数无效')
+                    revision = file_revision(path)
+                    rows = []
+                    for row in queue['proposals']:
+                        if not admin and row['spec']['author_id'] != actor:continue
+                        item = proposals.public(row,metadata,receipt_map)
+                        if item['status']=='pending' and item['spec']['book_revision']!=revision:
+                            item.update(status='conflict',conflict='正式正文版本已变化')
+                        if not status or item['status']==status:rows.append(item)
+                    return self._json(dict(ok=True,name=name,proposals=rows[offset:offset+limit],total=len(rows),
+                        next_offset=offset+limit if offset+limit<len(rows) else None,
+                        can_review=admin,draft_revision=draft_revision,book_revision=revision))
+                if route in ('/api/proposals/edit','/api/proposals/chapter'):
+                    if os.path.getsize(path)>drafts.MAX_SOURCE_BYTES:raise proposals.Error('本阶段原文件上限8MB',413)
+                    text,revision = book_snapshot(path)
+                    if drafts.units(text)>drafts.MAX_UNITS:raise proposals.Error('本阶段正文上限200万UTF-16单位',413)
+                    with drafts.navigation_guard(DATA_DIR,name):table=nav.get(DATA_DIR,name,text,revision)
+                    row,created = proposals.propose(queue,name,text,revision,table,actor,
+                        'edit' if route.endswith('/edit') else 'chapter',data)
+                    if created:
+                        if file_revision(path)!=revision:raise proposals.Error('原书已变化，建议未保存')
+                        proposals.save(DATA_DIR,name,queue)
+                    return self._json(dict(ok=True,proposal=proposals.public(row,metadata),already_submitted=not created))
+                row = next((r for r in queue['proposals'] if r['id']==data.get('id')),None)
+                if row is None:return self._err('建议不存在',404)
+                item = proposals.public(row,metadata)
+                if route == '/api/proposals/review':
+                    decision = proposals.decision_for(row,data)
+                    if item['status']=='accepted':
+                        if item['decision']['decision_digest']!=proposals.digest(decision):
+                            raise proposals.Error('该建议已接受，不能以不同内容重复审批')
+                        return self._json(dict(ok=True,proposal=item,already_applied=True))
+                    if decision['action']=='reject':
+                        if row['status']!='rejected':
+                            row.update(status='rejected',reviewed_by=actor,decided_at=drafts.stamp())
+                            proposals.save(DATA_DIR,name,queue)
+                        return self._json(dict(ok=True,proposal=proposals.public(row,metadata)))
+                    if row['status']!='pending':raise proposals.Error('该建议已拒绝或发生冲突，请重新提交')
+                    if type(data.get('expected_revision')) is not int or data['expected_revision']!=draft_revision:
+                        raise proposals.Error('草稿已更新，请刷新预览后再审批')
+                else:
+                    decision = None
+                    if item['status']!='pending':
+                        return self._json(dict(ok=True,proposal=item,preview=None,expected_revision=draft_revision))
+                try:
+                    if os.path.getsize(path)>drafts.MAX_SOURCE_BYTES:raise proposals.Error('本阶段原文件上限8MB',413)
+                    text,revision = book_snapshot(path)
+                    if drafts.units(text)>drafts.MAX_UNITS:raise proposals.Error('本阶段正文上限200万UTF-16单位',413)
+                    if row['spec']['book_revision']!=revision:raise proposals.Error('正式正文版本已变化，请重新提交建议')
+                    value,draft = drafts.load(DATA_DIR,name,text,revision)
+                    if value is None:
+                        with drafts.navigation_guard(DATA_DIR,name):table=nav.get(DATA_DIR,name,text,revision)
+                        value=drafts.create(name,text,revision,table)
+                    position = proposals.preview(row,value,draft,revision)
+                    if route=='/api/proposals/preview':
+                        return self._json(dict(ok=True,proposal=item,preview=position,expected_revision=draft_revision))
+                    value,draft = proposals.apply(row,value,draft,revision,decision)
+                    if file_revision(path)!=revision:raise proposals.Error('正式正文已变化，未应用建议')
+                except drafts.DraftError as exc:
+                    if exc.status!=409:raise
+                    if self.command=='POST':
+                        row.update(status='conflict',conflict=str(exc))
+                        proposals.save(DATA_DIR,name,queue)
+                        if route=='/api/proposals/review':raise
+                    return self._json(dict(ok=True,proposal=dict(item,status='conflict',conflict=str(exc)),
+                        preview=None,expected_revision=draft_revision))
+                # Sole acceptance commit: original PR5 draft + receipt in the same file.
+                drafts.save(DATA_DIR,name,value)
+                return self._json(dict(ok=True,proposal=proposals.public(row,value),already_applied=False))
+        except drafts.DraftError as exc:return self._err(str(exc),exc.status)
+        except (ValueError,TypeError,UnicodeError) as exc:return self._err(str(exc) or '修订参数无效',400)
+        except OSError:return self._err('修订存储暂不可用，请重试；原记录保留',503)
+
     def _api_book_search(self):
         query=self._query();name=(query.get('name') or [''])[0];needle=(query.get('q') or [''])[0]
         if safe_name(name)!=name or not 1<=len(needle)<=200:return self._err('书名或搜索词无效')
@@ -1931,6 +2048,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                 return self._api_import()
             if path == "/api/books/category":
                 return self._api_book_category()
+            if path in ("/api/proposals/edit", "/api/proposals/chapter", "/api/proposals/review", "/api/proposals/preview"):
+                return self._api_proposals()
             if path in ("/api/draft", "/api/draft/navigation", "/api/draft/start", "/api/draft/edit", "/api/draft/chapter", "/api/chapter"):
                 return self._api_draft()
             if path == "/api/navigation":

@@ -233,6 +233,48 @@ async def update_progress(name: str, offset: int, ctx: Context,
         "anchor": anchor, "tts_offset": prior.get("tts_offset", 0),
         "book_revision": book["book_revision"], "expected_revision": expected_revision})
 
+@mcp.tool()
+async def propose_edit(name: str, book_revision: str, operation: Literal['replace','delete','insert_before','insert_after'],
+                       quote: str, ctx: Context, replacement: str = '', reason: str = '',
+                       start: int = -1, context_before: str = '', context_after: str = '') -> dict:
+    """Submit a pending revision to formal text read with read_book; only a human administrator can accept it.
+
+    Exact quote is located by the server. Repeated quotes require adjacent context or an explicit UTF-16 start.
+    Insertions use a nonempty quote as the before/after anchor. Identical submissions reuse the same proposal ID.
+    Suggest clear errors/ads; flag uncertain literary wording in reason, never invent or rewrite plot.
+    This does not change the shared administrator draft, formal TXT, annotations or reading progress.
+    """
+    return await api(ctx, '/api/proposals/edit', dict(name=name,book_revision=book_revision,operation=operation,
+        quote=quote,replacement=replacement,reason=reason,start=start,context_before=context_before,context_after=context_after))
+
+
+@mcp.tool()
+async def propose_chapter(name: str, book_revision: str, operation: Literal['add','update','delete'],
+                          ctx: Context, quote: str = '', title: str = '', chapter_id: str = '',
+                          target_title: str = '', parent_title: str | None = None, reason: str = '',
+                          start: int = -1, context_before: str = '', context_after: str = '') -> dict:
+    """Propose a chapter change for administrator review, never change a directory directly.
+
+    Add uses a selected quote; update/delete identify an existing formal chapter by ID or unique target_title.
+    For update, omit quote to keep its position. Omit parent_title to retain the parent; empty means root.
+    Positions are located from exact quote/context. Ambiguous text or chapter titles are rejected.
+    """
+    return await api(ctx, '/api/proposals/chapter', dict(name=name,book_revision=book_revision,operation=operation,
+        quote=quote,title=title,chapter_id=chapter_id,target_title=target_title,parent_title=parent_title,
+        reason=reason,start=start,context_before=context_before,context_after=context_after))
+
+
+@mcp.tool()
+async def list_proposals(name: str, ctx: Context, status: Literal['','pending','accepted','rejected','conflict'] = '',
+                         offset: int = 0, limit: int = 20) -> dict:
+    """List your own revision suggestions and decisions; administrators can see all for a book.
+
+    Paginated, limit 1..50. Accepted means applied to the ONE shared administrator draft, not published TXT.
+    This tool neither records reading/review progress nor exposes the administrator's draft text.
+    """
+    return await api(ctx, '/api/proposals?' + urllib.parse.urlencode(dict(name=name,status=status,offset=offset,limit=limit)))
+
+
 class IdentityGate:
     def __init__(self, app):
         self.app = app

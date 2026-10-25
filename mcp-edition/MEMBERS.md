@@ -27,7 +27,7 @@ Agent 选择「URL + Bearer 令牌」或「仅 URL」。第一种在客户端分
 - POST /api/credentials/revoke：password、member_id、credential_id；ID 不匹配409，user409，不存在404，错误口令403。
 - 旧 POST /api/identities {name,password} 兼容；旧 DELETE 变为保留历史的撤销。旧 GET /api/status 仍只有有效身份名和服务状态。
 - 新网关 /mcp/member/<随机凭据> 仅接受配置的灰云 Host。错误主机404、撤销/错误凭据401。新网关遇到显式不匹配的 Authorization 也拒绝。原 004 固定适配器的既有映射保持不变。
-- 无新 MCP 工具，无 Schema 变化，仍为12工具；get_calling_guide 和 read_book 保存进度提醒不变，已有连接不需重配。
+- PR4 本身无新 MCP 工具、无 Schema 变化，发布时为12工具；后续 [协作修订](REVISIONS.md) 增至15个。get_calling_guide 和 read_book 保存进度提醒不变，已有连接不需重配。
 
 令牌管理服务和 MCP 应使用同一份数据目录及正确的配置：
 
@@ -52,4 +52,4 @@ READER_MCP_PATH_KEY_FILE 继续指向已有通用路径钥匙文件。缺少连�
 
 selftest-members.py 使用临时数据启动真实 HTTP/MCP，覆盖同昵称不同 ID、人类进度/评论归属、不能管理分类、两种 Agent 接入、旧004、撤销后拒绝/重启、失败不留成员、备份、损坏拒写、五进程并发、日志/列表不泄漏。默认还用 Playwright/Chrome 验证手机和桌面创建/登录/刷新/实际发批注；--no-browser 可在 Linux 执行其余测试。
 
-旧保全、MCP/HTTP、阅读前端和目录/EPUB 回归需一并运行。真实 GPT 新成员的客户端手动连接仍需用户验收；旧004连接不要求重配。P1 昵称编辑、轮换、同成员增发凭据及管理审计展示未实现；协作校对、草稿与发布另行开发。
+旧保全、MCP/HTTP、阅读前端和目录/EPUB 回归需一并运行。真实 GPT 新成员的客户端手动连接仍需用户验收；旧004连接不要求重配。P1 昵称编辑、轮换、同成员增发凭据及管理审计展示未实现；后续草稿见 [DRAFTS.md](DRAFTS.md)，建议与审批见 [REVISIONS.md](REVISIONS.md)，正式发布仍未实施。
