@@ -5,7 +5,7 @@ let reviewName='',reviewOffset=0,reviewGeneration=0,reviewBusy=false;
 const reviewStyle=document.createElement('style');
 reviewStyle.textContent=`
 #btnReview[hidden],.rm-review[hidden]{display:none}.rm-review{position:fixed;inset:0;z-index:500;background:#0007;display:flex;align-items:center;justify-content:center;padding:12px}
-.rm-review-body{background:var(--bg,#f5efe3);color:var(--fg,#302b26);width:min(900px,100%);max-height:94vh;overflow:auto;border-radius:12px;padding:18px;box-sizing:border-box}
+.rm-review-body{background:var(--bg,#f5efe3);color:var(--fg,#302b26);width:min(900px,100%);max-height:94vh;overflow:auto;overscroll-behavior:contain;border-radius:12px;padding:18px;box-sizing:border-box}
 .rm-review-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.rm-review-head strong{flex:1}.rm-review-card{border:1px solid #8886;border-radius:8px;padding:12px;margin-top:12px}
 .rm-review-card h3{margin:0 0 8px}.rm-review-card pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto;font:inherit;background:#8881;padding:8px}
 .rm-review-card textarea{box-sizing:border-box;width:100%;min-height:100px;font:inherit;padding:8px}.rm-review-card button{margin:8px 8px 0 0;min-height:44px}
@@ -33,14 +33,25 @@ function reviewButton(text,fn){const b=reviewNode('button',text,'btn');b.type='b
 function reviewText(container,label,text){container.append(reviewNode('b',label),reviewNode('pre',text||'（空）'));}
 function reviewAfter(spec,replacement){return spec.operation==='insert_before'?replacement+spec.quote:spec.operation==='insert_after'?spec.quote+replacement:replacement;}
 function reviewLock(value){reviewBusy=value;for(const el of reviewDialog.querySelectorAll('button,select'))el.disabled=value;}
-function reviewClose(){if(reviewBusy)return;reviewDialog.hidden=true;reviewGeneration++;$('#btnReview').focus();}
+function reviewClose(){if(reviewBusy)return;reviewDialog.hidden=true;reviewGeneration++;$('#btnLib').focus();}
 $('#reviewClose').onclick=reviewClose;
-reviewDialog.addEventListener('keydown',e=>{if(e.key==='Escape'){e.stopPropagation();reviewClose();}});
+reviewDialog.addEventListener('keydown',e=>{
+  e.stopPropagation();
+  if(e.key==='Escape'){reviewClose();return;}
+  // Keep focus within the modal without cancelling native scrolling or editing.
+  if(e.key==='Tab'){
+    const nodes=[...reviewDialog.querySelectorAll('button,select,textarea,[tabindex]')].filter(el=>!el.disabled && el.getClientRects().length);
+    const first=nodes[0],last=nodes[nodes.length-1];
+    if(first && e.shiftKey && document.activeElement===first){e.preventDefault();last.focus();}
+    else if(last && !e.shiftKey && document.activeElement===last){e.preventDefault();first.focus();}
+  }
+});
 $('#reviewStatus').onchange=()=>{reviewOffset=0;loadProposals();};
 $('#reviewRefresh').onclick=()=>loadProposals();
 $('#btnReview').onclick=async()=>{
   if(!canManageLibrary || !state.book)return;
   if(!await closeDraftEditor())return;
+  closePanels();
   reviewName=state.book.name;reviewOffset=0;$('#reviewBook').textContent='书籍：'+reviewName;
   $('#reviewStatus').value='pending';reviewDialog.hidden=false;$('#reviewClose').focus();await loadProposals();
 };

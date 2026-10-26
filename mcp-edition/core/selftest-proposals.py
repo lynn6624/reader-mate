@@ -142,7 +142,7 @@ def browser(origin, rows):
                 page.goto(origin+'/?who_token=test-owner');page.wait_for_function('typeof state!=="undefined" && state.book')
                 name='ui-mobile.txt' if mobile else 'ui-desktop.txt'
                 page.evaluate('(name)=>openBook(name)',name);page.wait_for_function('(name)=>state.book?.name===name',arg=name)
-                page.locator('#btnReview').click();page.locator('.rm-review-card').first.wait_for()
+                page.locator('#btnLib').click();page.locator('#btnReview').click();page.locator('.rm-review-card').first.wait_for()
                 assert page.locator('#reviewBook').inner_text()=='书籍：'+name
                 assert page.locator('#reviewList img').count()==0
                 accepted_id,rejected_id=rows[name]

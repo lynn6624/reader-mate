@@ -45,11 +45,16 @@
      不这么做的话 .ibtn 有 white-space:nowrap 不肯收缩，整条顶栏会超出视口，
      把整个页面撑宽——连正文都会贴到屏幕右边（最右边的按钮看着像"不见了"）。 */
   @media (max-width: 480px){
-    #bar{gap:6px; padding:0 8px}
+    #bar{gap:4px; padding:0 6px}
     #bar .lbl{display:none}
     #barRight{gap:4px}
-    #bar .ibtn{padding:6px 8px}
+    #bar .ibtn{padding:6px}
+    #bar #pct{display:none}
+    #bar #hlVisibility{width:clamp(64px,calc(100vw - 256px),118px);flex-shrink:0}
     #bkChapter{display:none}
+  }
+  @media (max-width: 360px){
+    #bar,#barRight{gap:2px}
   }
 
   #pbar{position:fixed; top:52px; left:0; right:0; height:2px; background:transparent; z-index:20}
@@ -494,7 +499,6 @@
   <button class="ibtn" id="btnDraft" hidden title="打开管理员草稿">草稿</button>
 <div id="bar">
   <button class="ibtn" id="btnLib" title="书库">☰<span class="lbl"> 书库</span></button>
-  <button class="ibtn" id="btnReview" hidden title="修订审批">修订审批</button>
   <button class="ibtn" id="btnToc" title="本书章节目录" aria-label="本书章节目录">目录</button>
   <div id="titleBox">
     <span id="bkTitle">读伴</span>
@@ -586,6 +590,7 @@
       <button class="btn primary" id="btnWhoSwitch">切换</button>
     </div>
     <div class="whoHint">仅数字字母下划线连字符，≤32。同一台机器多身份会互相独立落进度。</div>
+    <button class="btn" id="btnReview" hidden type="button" style="min-height:44px;margin-top:8px" title="审批当前书籍的修订建议">修订审批</button>
     <a class="tokenLink" href="https://token.example.com/" target="_blank" rel="noopener">管理共读身份令牌 ↗</a>
     <!-- KINDLE_EXTENSION_PANEL -->
   </div>
@@ -2298,6 +2303,8 @@ $("#btnTheme").addEventListener("click", () => {
 });
 
 document.addEventListener("keydown", e => {
+  // The review dialog owns its keyboard, even if focus was moved outside it.
+  if (document.getElementById('reviewDialog')?.hidden === false) return;
   const tag = (e.target.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea"){
     if (e.key === "Escape") closePanels();
