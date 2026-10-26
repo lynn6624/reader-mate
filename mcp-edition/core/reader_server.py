@@ -542,27 +542,101 @@ def book_entry(name, previous=None, text=None):
     return entry
 
 
-def load_progress() -> dict:
-    """读 progress.json，懒兼容老格式（books[name] 是单份进度而不是 {身份: 进度}）。
+class ProgressStoreError(ValueError):
+    status = 503
 
-    老文件**不动**——只在内存里规范成新形状，下次保存才升到 {身份: 进度} 形态。
-    """
-    pr = load_json(PROGRESS_FILE, {})
-    if not isinstance(pr, dict):
-        pr = {}
-    pr.setdefault("version", 1)
-    pr.setdefault("updated", now_iso())
-    pr.setdefault("books", {})
-    books = pr["books"]
-    if not isinstance(books, dict):
-        pr["books"] = {}
-        return pr
-    # 内存里把所有书的进度规范成 {身份: 进度}——不动 PROGRESS_FILE
-    norm = {}
-    for name, d in books.items():
-        norm[name] = book_progress(d)
-    pr["books"] = norm
+
+class ProgressConflictError(ProgressStoreError):
+    status = 409
+
+
+class ProgressSnapshot(dict):
+    """A read version, including the digest of the original (possibly legacy) bytes."""
+
+
+def _progress_error():
+    return ProgressStoreError("阅读进度文件不可用，原文件已保留；请核对可信备份")
+
+
+def _progress_raw():
+    try:
+        with open(PROGRESS_FILE, "rb") as stream:
+            return stream.read()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise _progress_error() from exc
+
+
+def _progress_digest(raw):
+    return hashlib.sha256(raw).hexdigest() if raw is not None else None
+
+
+def _progress_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise _progress_error()
+        result[key] = value
+    return result
+
+
+def _progress_constant(_):
+    raise _progress_error()
+
+
+def _progress_view(value):
+    if not isinstance(value, dict) or not isinstance(value.get("books", {}), dict):
+        raise _progress_error()
+    result = dict(value)
+    result.setdefault("version", 1)
+    result.setdefault("updated", None)
+    result["books"] = {name: book_progress(book) for name, book in value.get("books", {}).items()}
+    return result
+
+
+def load_progress() -> dict:
+    """Read old/new shapes without writing, inventing IDs, or hiding corrupt data."""
+    raw = _progress_raw()
+    try:
+        value = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=_progress_pairs,
+                           parse_constant=_progress_constant) if raw is not None else {}
+        pr = ProgressSnapshot(_progress_view(value))
+    except (ValueError, UnicodeError) as exc:
+        raise _progress_error() from exc
+    pr.source_digest = _progress_digest(raw)
     return pr
+
+
+_progress_lock_state = threading.local()
+
+
+@contextmanager
+def _progress_guard():
+    """Cover complete HTTP read/modify/write and allow save_progress to nest safely."""
+    if getattr(_progress_lock_state, "held", False):
+        yield
+        return
+    with member_store.locked(PROGRESS_FILE):
+        _progress_lock_state.held = True
+        try:
+            yield
+        finally:
+            _progress_lock_state.held = False
+
+
+def _progress_atomic(path, raw):
+    fd, temporary = tempfile.mkstemp(prefix=".progress-", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 # ---------------------------------------------------------------- 划线/批注
@@ -734,25 +808,24 @@ def resolve_who(claimed, token: str) -> str:
 
 
 def book_progress(d) -> dict:
-    """把 books[name] 的「老/新」两种形状都规范成 {身份: 进度}。
-
-    老形状：name 直接含 offset/updated 等字段 → 视作 {"user": 那一份}
-    新形状：已经是 {身份: 进度} → 过滤掉非字典身份项后原样返回
-    这层规范化**只在内存里做**，不动 progress.json 文件本体；
-    下一次保存时新版才会以 {身份: 进度} 形态落盘——安全、自然迁移。
-    """
+    """Keep historical IDs verbatim; only a legacy scalar progress record is user."""
     if not isinstance(d, dict):
-        return {"user": {}}
-    # 老形状识别：有 offset/percent/updated 等"进度字段"在**最外层** → 视为单身份（user）
+        raise _progress_error()
     flat_keys = {"offset", "percent", "chars", "chapter", "anchor",
-                 "tts_offset", "updated"}
-    if any(k in d for k in flat_keys):
+                 "tts_offset", "updated", "revision", "book_revision",
+                 "paragraph_idx", "char_offset"}
+    # A member may legitimately be named offset/updated; its value is a record.
+    if any(k in d and not isinstance(d[k], dict) for k in flat_keys):
+        if (any(k in d and isinstance(d[k], dict) for k in flat_keys) or
+                any(isinstance(v, dict) and flat_keys.intersection(v) for v in d.values())):
+            raise _progress_error()  # ambiguous mixed legacy/member shape
         return {"user": dict(d)}
     out = {}
     for k, v in d.items():
-        if isinstance(v, dict):
-            out[norm_who(k)] = v
-    return out or {"user": {}}
+        if not isinstance(k, str) or not k or not isinstance(v, dict):
+            raise _progress_error()
+        out[k] = dict(v)
+    return out
 
 
 def text_weight(s: str) -> int:
@@ -1083,16 +1156,51 @@ def write_progress_md(pr: dict, lib: dict):
 
 
 def save_progress(pr: dict):
-    """写 progress.json 前再做一遍规范化，保证落盘的就是新形状。"""
-    pr["updated"] = now_iso()
-    # 把每条 books[name] 收紧成 {身份: 进度}
-    if isinstance(pr.get("books"), dict):
-        norm = {}
-        for name, d in pr["books"].items():
-            norm[name] = book_progress(d)
-        pr["books"] = norm
-    dump_json(PROGRESS_FILE, pr)
-    write_progress_md(pr, load_library())
+    """One canonical commit; never overwrite a stale read or roll back for a mirror."""
+    if not isinstance(pr, ProgressSnapshot):
+        raise ProgressConflictError("请重新读取阅读进度后再保存；拒绝覆盖未知版本")
+    try:
+        with _progress_guard():
+            original = _progress_raw()
+            if _progress_digest(original) != pr.source_digest:
+                raise ProgressConflictError("阅读进度已更新，请重新读取后重试")
+            value = _progress_view(pr)
+            value.update(updated=now_iso(), preservation_version=1)
+            raw = json.dumps(value, ensure_ascii=False, indent=1, allow_nan=False).encode("utf-8")
+            if original is not None and pr.get("preservation_version") != 1:
+                directory = os.path.join(DATA_DIR, "progress-backups")
+                os.makedirs(directory, mode=0o700, exist_ok=True)
+                backup = os.path.join(directory, "legacy-" + pr.source_digest + ".json")
+                if os.path.exists(backup):
+                    with open(backup, "rb") as stream:
+                        if stream.read() != original:
+                            raise _progress_error()
+                else:
+                    _progress_atomic(backup, original)
+            if _progress_digest(_progress_raw()) != pr.source_digest:
+                raise ProgressConflictError("阅读进度已更新，请重新读取后重试")
+            _progress_atomic(PROGRESS_FILE, raw)
+            pr.update(value)
+            pr.source_digest = _progress_digest(raw)
+            return _refresh_progress_mirror(pr)
+    except OSError as exc:
+        raise _progress_error() from exc
+
+
+def _refresh_progress_mirror(pr):
+    try:
+        write_progress_md(pr, load_library())
+        return True
+    except Exception:
+        # JSON already committed. Its revision is authoritative even if Markdown fails.
+        print("阅读进度已保存；Markdown 镜像未更新，可从 progress.json 重新生成", file=sys.stderr)
+        return False
+
+
+def rebuild_progress_mirror():
+    """Repair only the derived Markdown, from the latest canonical snapshot."""
+    with _lock, _progress_guard():
+        return _refresh_progress_mirror(load_progress())
 
 
 # Optional Kindle extension. The base reader does not import or serve it when absent.
@@ -1320,7 +1428,7 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                     return self._err("审计仅限主人读取", 403)
                 return self._api_audit()
             return self._err("没有这个路径", 404)
-        except NotesStoreError as e:
+        except (NotesStoreError, ProgressStoreError) as e:
             return self._err(str(e), e.status)
         except Exception as e:
             return self._err("服务端出错：%s" % e, 500)
@@ -1800,7 +1908,7 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             if path == "/api/notes/highlight":
                 return self._api_notes_highlight_delete()
             return self._err("没有这个路径", 404)
-        except NotesStoreError as e:
+        except (NotesStoreError, ProgressStoreError) as e:
             return self._err(str(e), e.status)
         except Exception as e:
             return self._err("服务端出错：%s" % e, 500)
@@ -1840,7 +1948,7 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             if path == "/api/notes/comment/delete":
                 return self._api_notes_comment_delete()
             return self._err("没有这个路径", 404)
-        except NotesStoreError as e:
+        except (NotesStoreError, ProgressStoreError) as e:
             return self._err(str(e), e.status)
         except Exception as e:
             return self._err("服务端出错：%s" % e, 500)
@@ -1951,7 +2059,9 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         p = book_path(name)
         if not os.path.isfile(p):
             return self._err("书库里没有这本书", 404)
-        with _lock:
+        with _lock, _progress_guard():
+            # Validate progress before any destructive book operation.
+            pr = load_progress()
             from navigation import metadata_path
             navigation = metadata_path(DATA_DIR,name)
             if navigation.exists():
@@ -1962,7 +2072,6 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             lib = load_library()
             lib.get("books", {}).pop(name, None)
             dump_json(LIBRARY_FILE, lib)
-            pr = load_progress()
             pr.get("books", {}).pop(name, None)
             save_progress(pr)
         audit(resolve_who(None, self._who_token()), _audit_token_hint(self._who_token()),
@@ -1999,7 +2108,7 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         who = resolve_who(data.get("who"), self._who_token())
         if not who:
             return self._err("身份令牌不对，或者自称 AI 却没带令牌", 403)
-        with _lock:
+        with _lock, _progress_guard():
             if not os.path.isfile(path):
                 return self._err("书库里没有这本书", 404)
             text, book_revision = book_snapshot(path)
@@ -2017,10 +2126,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             by_who = books.setdefault(name, {"user": {}})
             # load_progress 已规范化，这里理论上一定是 {身份: 进度}
             # 保险起见过一遍：万一 setdefault 拿到的是旧形状（不可能），丢给 book_progress 兜底
-            if not isinstance(by_who, dict) or any(
-                    k in by_who for k in ("offset", "percent", "updated")):
-                by_who = book_progress(by_who)
-                books[name] = by_who
+            by_who = book_progress(by_who)
+            books[name] = by_who
             previous = by_who.get(who) if isinstance(by_who.get(who), dict) else {}
             try:
                 current_revision = max(0, int(previous.get("revision") or 0))
@@ -2041,6 +2148,7 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             if not 0 <= tts_offset <= units or text_position(text, tts_offset) is None:
                 return self._err("tts_offset 超出正文或落在 emoji 中间")
             by_who[who] = {
+                **previous,
                 "offset": offset,
                 "percent": offset / units if units else 0,
                 "chars": units,
@@ -2055,7 +2163,7 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                 "paragraph_idx": paragraph_idx,
                 "char_offset": char_offset,
             }
-            save_progress(pr)
+            mirror_updated = save_progress(pr)
         # 审计：写盘成功才记，**失败（403）不记**——已由上面 return 提前出。
         audit(who=who, token_hint=_audit_token_hint(self._who_token()),
               ip=self._client_ip(), act="POST /api/progress",
@@ -2064,7 +2172,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             return self._redirect(redirect)
         return self._json({"ok": True, "name": name, "who": who, "offset": offset,
                            "revision": current_revision + 1, "book_revision": book_revision,
-                           "paragraph_idx": paragraph_idx, "char_offset": char_offset})
+                           "paragraph_idx": paragraph_idx, "char_offset": char_offset,
+                           "mirror_updated": mirror_updated})
 
     # ---- notes ----
     def _api_notes(self):
@@ -2546,10 +2655,12 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
 def main():
     os.makedirs(BOOKS_DIR, exist_ok=True)
     os.makedirs(DATA_DIR, exist_ok=True)
-    for p, d in ((PROGRESS_FILE, {"version": 1, "updated": now_iso(), "books": {}}),
-                 (LIBRARY_FILE, {"version": 1, "updated": now_iso(), "books": {}})):
-        if not os.path.exists(p):
-            dump_json(p, d)
+    with _progress_guard():
+        if not os.path.exists(PROGRESS_FILE):
+            _progress_atomic(PROGRESS_FILE, json.dumps(
+                {"version": 1, "updated": now_iso(), "books": {}}).encode("utf-8"))
+    if not os.path.exists(LIBRARY_FILE):
+        dump_json(LIBRARY_FILE, {"version": 1, "updated": now_iso(), "books": {}})
     print("读伴 · v1.0 · 书库 %s" % BOOKS_DIR)
     if TOKEN:
         # 鉴权已开启：访问任何 /api/* 都要带 token。
