@@ -40,3 +40,15 @@
 MCP 连接由服务器验证身份令牌或已配置的专用 URL。工具写入身份由服务器确认；调用时不要传入 author_id/who 冒充别人。不要在对话、书库、划线或批注里记录令牌和路径钥匙。普通共读身份可以读取共享书库和有权限的数据，不能通过这些 MCP 工具上传或删除书籍。
 
 如果只是想了解工具怎么用，先调用 get_calling_guide({})；本 TXT 是同一参考的书库备份。书库里的这本参考不应当作为阅读进度演示对象，也不要对它测试写入工具。
+
+四、修订建议与人工审批
+
+现有12个工具继续可用，新增3个建议工具。每书只有一份共享管理员草稿；普通Agent只能提交建议，不能直接编辑草稿、批准或发布。建议不会保存阅读进度或生成独立校对进度。
+
+1. 先用read_book读取正式原文，保留book_revision。
+2. propose_edit({"name":"实际文件名.txt","book_revision":"read_book返回值","operation":"replace","quote":"准确原文片段","replacement":"建议替换文字","reason":"修改理由"})。operation还可为delete、insert_before、insert_after；插入以非空quote作为锚点。删除时replacement留空。服务端定位原文；重复原文必须提供紧邻context_before/context_after，或已有准确UTF-16 start，不要猜偏移。单次原文与建议内容各最多4000 UTF-16单位。
+3. propose_chapter({"name":"实际文件名.txt","book_revision":"read_book返回值","operation":"add","quote":"选中的章节标题","title":"建议章名","reason":"理由"})。update/delete用chapter_id或唯一target_title指定正式目录中的目标；update不传quote则保留位置，传quote可建议移动。parent_title省略保留原上级，空字符串表示顶层；不唯一时拒绝。
+4. list_proposals({"name":"实际文件名.txt","status":"pending","offset":0,"limit":20})查询本身份建议；status可为pending/accepted/rejected/conflict或空（全部），limit为1—50，后续页使用next_offset。相同身份的完全相同建议返回原ID。
+5. 管理员在阅读器打开本书，点击“修订审批”，预览、手动调整后接受或拒绝。accepted仅表示已写入共享草稿，正式TXT仍为原版；rejected不改变草稿。冲突建议不能强行套用，应重新核对后提交。原文版本改变后，不能把旧建议当成新版建议继续应用。
+
+只建议明确广告、水印、乱码、错字、异常重复和章节问题。专名、译名、特殊措辞及存疑标点只说明疑点，由人类判断；不补写、改写或删减情节。普通批注和修订建议分开保存。审批与发布不是同一操作，本阶段没有正式TXT发布功能。

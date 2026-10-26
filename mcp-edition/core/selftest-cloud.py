@@ -93,7 +93,7 @@ async def run():
                     async with streamable_http_client(f'http://127.0.0.1:{mp}/mcp/{path_key}', http_client=hc) as (r,w,_):
                         async with ClientSession(r,w) as session:
                             await session.initialize()
-                            tools = await session.list_tools(); assert len(tools.tools) == 12
+                            tools = await session.list_tools(); assert len(tools.tools) == 15
                             async def call(name, args):
                                 result = await session.call_tool(name, args)
                                 assert not result.isError, result
@@ -147,7 +147,7 @@ async def run():
                         f'http://127.0.0.1:{mp}/mcp/{chatgpt_key}', http_client=hc) as (r,w,_):
                     async with ClientSession(r,w) as session:
                         await session.initialize()
-                        assert len((await session.list_tools()).tools) == 12
+                        assert len((await session.list_tools()).tools) == 15
                         result = await session.call_tool('get_highlights', {
                             'name':'test.txt', 'chapter_id':'第一章'})
                         assert not result.isError, result

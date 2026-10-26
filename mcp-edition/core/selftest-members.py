@@ -173,7 +173,7 @@ async def integration():
                     async with httpx.AsyncClient(headers=headers,trust_env=False) as mc:
                         async with streamable_http_client(mcp+path,http_client=mc) as (read,write,_):
                             async with ClientSession(read,write) as session:
-                                await session.initialize();tools=await session.list_tools();assert len(tools.tools)==12
+                                await session.initialize();tools=await session.list_tools();assert len(tools.tools)==15
                                 result=await session.call_tool('list_books',{});assert not result.isError
                                 return json.loads(result.content[0].text)
                 normal=await call('/mcp/'+'T'*24,{'Authorization':'Bearer '+agent['token']})

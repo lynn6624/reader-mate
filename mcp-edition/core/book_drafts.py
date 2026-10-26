@@ -43,9 +43,10 @@ def span(raw, start, end):
         raise DraftError('选区不能截断 emoji',400) from exc
 
 
-def load(root, name, text, revision):
+def read_metadata(root, name):
+    """Read the bounded draft record, including approval receipts, without replay."""
     path=path_for(root,name)
-    if not path.exists():return None,text
+    if not path.exists():return None
     try:
         with path.open('rb') as f:raw=f.read(MAX_FILE+1)
         if len(raw)>MAX_FILE:raise ValueError()
@@ -55,6 +56,15 @@ def load(root, name, text, revision):
                 or value['revision']<1 or not isinstance(value.get('operations'),list) or len(value['operations'])>MAX_EDITS
                 or not isinstance(value.get('chapter_issues'),list)):
             raise ValueError()
+        return value
+    except (OSError,ValueError,KeyError,TypeError,UnicodeError) as exc:
+        raise DraftError('草稿记录损坏，原文件已保留；请检查备份',503) from exc
+
+
+def load(root, name, text, revision):
+    value=read_metadata(root,name)
+    if value is None:return None,text
+    try:
         if value.get('base_revision')!=revision:
             raise DraftError('原书已变化，旧草稿已保留；请管理员核对，不能自动套用')
         raw=text.encode('utf-16-le');ids=set()

@@ -3,6 +3,7 @@ let draftEditor=null, draftEditTimer=null, chapterEditor=null;
 function refreshDraftControls(){
   const active=!!state.book?.isDraft;
   $('#btnDraft').hidden=!canManageLibrary || !state.book;
+  $('#btnReview').hidden=!canManageLibrary || !state.book;
   $('#btnDraft').textContent=active?'草稿中':'草稿';
   $('#draftBanner').hidden=!active;document.body.classList.toggle('draft-mode',active);
   if(active)$('#draftBanner').firstChild.textContent='草稿预览 · 已保存第 '+state.book.draft_revision+' 版 · '+state.book.edit_count+' 次文字编辑 · '+(state.book.chapter_issues||[]).length+' 项章节待核对 ';

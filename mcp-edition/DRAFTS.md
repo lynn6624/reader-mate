@@ -31,7 +31,7 @@
 - POST /api/draft/chapter：name、base_revision、expected_revision、action=upsert|delete；upsert带 start/end/quote/title/parent_id，修改或删除带 id；可选 resolve_issue_id 恢复待核对项。
 - POST /api/chapter：相同章节参数，带 book_revision 和目录 expected_revision，更新现有正式目录元数据。保存后在锁外追加既有审计记录。
 
-MCP工具仍12个，Schema、只读调用指南和进度协议不变。本阶段没有开放 Agent 修订工具。
+PR5 最初保留12个MCP工具，没有开放 Agent 修订工具。后续 [协作修订](REVISIONS.md) 新增3个建议工具，旧工具与进度协议保持；人类接受建议后仍通过本模块修改同一份草稿。草稿新增可选 `proposal_receipts`，与对应编辑一起原子保存；普通草稿编辑保留这些审批记录。
 
 ## 部署与回退
 
