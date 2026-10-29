@@ -16,7 +16,7 @@ document.head.append(reviewStyle);
 const reviewDialog=document.createElement('div');reviewDialog.id='reviewDialog';reviewDialog.className='rm-review';reviewDialog.hidden=true;
 reviewDialog.innerHTML=`<section class="rm-review-body" role="dialog" aria-modal="true" aria-labelledby="reviewTitle">
 <div class="rm-review-head"><strong id="reviewTitle">修订审批</strong><button id="reviewClose" class="btn">关闭</button></div>
-<p id="reviewBook"></p><p>接受后写入本书共享草稿，正式正文仍保持原版。</p>
+<p id="reviewBook"></p><p>正文建议写入本书共享草稿；章节建议只修改共享草稿目录，请到「草稿 → 目录」查看。正式正文保持不变。</p>
 <div class="rm-review-head"><label>状态 <select id="reviewStatus"><option value="pending">待审</option><option value="">全部</option><option value="accepted">已接受</option><option value="rejected">已拒绝</option><option value="conflict">冲突</option></select></label><button id="reviewRefresh" class="btn">刷新</button></div>
 <p id="reviewMessage" role="status"></p><div id="reviewList"></div><div id="reviewNav" class="rm-review-nav"></div></section>`;
 document.body.append(reviewDialog);
@@ -97,7 +97,7 @@ function renderProposal(row){
         const input=document.createElement('textarea');input.value=isText?preview.replacement:preview.title;
         input.maxLength=isText?4000:160;input.setAttribute('aria-label',isText?'接受内容（可手动调整）':'接受章名（可手动调整）');
         if(spec.kind==='chapter' && spec.operation==='delete')input.hidden=true;
-        detail.append(reviewNode('p',spec.kind==='chapter' && spec.operation==='delete'?'接受后从草稿目录移除此章节，正文保持不变。':'可手动调整下面的内容，再接受到共享草稿。'),input);
+        detail.append(reviewNode('p',spec.kind==='chapter'?(spec.operation==='delete'?'接受后从共享草稿目录移除此章节，正文保持不变。请到「草稿 → 目录」查看。':'可手动调整下面的章名；接受后只修改共享草稿目录，正文保持不变。请到「草稿 → 目录」查看。'):'可手动调整下面的内容，再接受到共享草稿。'),input);
         if(isText){const after=reviewNode('pre',reviewAfter(spec,input.value));input.oninput=()=>{after.textContent=reviewAfter(spec,input.value)||'（空）';};detail.append(reviewNode('b','调整后文本'),after);}
         detail.append(reviewButton('接受当前内容',()=>decideProposal(row,{action:'accept',expected_revision:result.expected_revision,[field]:input.value},detail)));
         detail.append(reviewButton('拒绝',()=>decideProposal(row,{action:'reject'},detail)));
@@ -112,7 +112,7 @@ async function decideProposal(row,decision,detail){
   reviewLock(true);
   try{
     const result=await reviewApi('/api/proposals/review',{name:row.spec.name,id:row.id,...decision});
-    toast(result.proposal.status==='accepted'?'已接受到共享草稿':'已拒绝，正文未改变');
+    toast(result.proposal.status==='accepted'?(row.spec.kind==='chapter'?'已接受到共享草稿目录，请到「草稿 → 目录」查看；正文保持不变':'已接受到共享草稿'):'已拒绝，正文未改变');
     if(result.proposal.status==='accepted' && state.book?.isDraft && state.book.name===row.spec.name){
       const view=await reviewApi('/api/draft?'+new URLSearchParams({name:row.spec.name}));applyDraftView(view);
     }
