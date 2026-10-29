@@ -201,6 +201,28 @@ def create(path, nickname, kind, channel, ident=None):
     return transact(path, change)
 
 
+def rename(path, ident, nickname, expected_nickname):
+    """Change only display metadata; stable identity and credentials stay intact."""
+    if not isinstance(ident, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", ident):
+        raise ValueError("成员 ID 无效")
+    if (not isinstance(nickname, str) or not 1 <= len(nickname.strip()) <= 64
+            or any(ord(c) < 32 or 127 <= ord(c) < 160 for c in nickname)):
+        raise ValueError("显示名需为 1–64 字，不能含控制字符")
+    nickname.encode("utf-8")  # Reject incomplete Unicode before any storage write.
+    if not isinstance(expected_nickname, str) or not 1 <= len(expected_nickname) <= 64:
+        raise ValueError("需要列表中的原显示名")
+    def change(doc):
+        row = profiles(doc).get(ident)
+        if row is None:
+            raise KeyError("没有这个成员")
+        if row["nickname"] != expected_nickname:
+            raise FileExistsError("显示名已在别处修改，请刷新列表后重试")
+        members = adopt(doc)
+        members[ident]["nickname"] = nickname.strip()
+        return profiles(doc)[ident]
+    return transact(path, change)
+
+
 def revoke(path, ident, credential_id=None):
     if ident == "user":
         raise FileExistsError("user 是保留的系统身份，不能撤销")

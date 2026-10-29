@@ -71,7 +71,7 @@ async function loadProposals(){
 function renderProposal(row){
   const spec=row.spec,card=reviewNode('article','','rm-review-card');card.dataset.proposalId=row.id;
   card.append(reviewNode('h3',(spec.kind==='chapter'?'章节':'正文')+' · '+reviewActions[spec.operation]+' · '+reviewLabels[row.status]));
-  card.append(reviewNode('p','提交者：'+spec.author_id+' · '+new Date(row.created_at).toLocaleString(),'rm-review-meta'));
+  card.append(reviewNode('p','提交者：'+progressReaderLabel(spec.author_id)+' · '+new Date(row.created_at).toLocaleString(),'rm-review-meta'));
   reviewText(card,'原文',spec.quote);
   reviewText(card,spec.kind==='chapter'?'建议章名':'修改后文本',spec.kind==='chapter'?spec.title:reviewAfter(spec,spec.replacement));
   if(spec.kind==='chapter')card.append(reviewNode('p','目标章节：'+(spec.target?.title||'新增')+'；上级：'+(spec.parent?.title||'顶层')));

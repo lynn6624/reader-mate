@@ -2657,7 +2657,7 @@ function highlightColor(author){
 }
 let memberProfiles = {};
 function readerLabel(author){
-  if (author && Object.prototype.hasOwnProperty.call(memberProfiles, author) && memberProfiles[author].kind !== "legacy") return memberProfiles[author].nickname;
+  if (author && Object.prototype.hasOwnProperty.call(memberProfiles, author)) return memberProfiles[author].nickname;
   return String(author || "历史作者未知");
 }
 function annotationAuthor(comment){

@@ -34,6 +34,11 @@
   ul{list-style:none;margin:0;padding:0}
   li{display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--line)}
   li:last-child{border-bottom:0}
+  .member{flex-wrap:wrap;align-items:flex-start}
+  .member-main{flex:1 1 170px;min-width:0;overflow-wrap:anywhere}
+  .member-actions{display:flex;gap:8px;flex-wrap:wrap}
+  .rename-form{flex:1 0 100%;min-width:0}
+  .rename-form[hidden]{display:none}
   .name{flex:1;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px}
   .msg{font-size:13px;padding:9px 11px;border-radius:9px;margin-top:10px;display:none}
   .msg.show{display:block}
@@ -56,10 +61,10 @@
 <label for="setupPw2">再输一次</label><input id="setupPw2" type="password" autocomplete="new-password">
 <button id="setupBtn" class="primary">设置口令</button></div>
 <div class="card"><label for="adminPw">管理员口令</label><input id="adminPw" type="password" autocomplete="current-password">
-<div class="hint">用于查看成员、添加成员和撤销凭据。刷新页面后需重新输入。</div>
+<div class="hint">用于查看成员、修改显示名、添加成员和撤销凭据。刷新页面后需重新输入。</div>
 <button id="refreshBtn">查看 / 刷新成员</button><div id="statusMsg" class="msg" role="status"></div></div>
 <div class="card"><h2>现有成员</h2><ul id="list"><li class="empty">输入管理员口令后查看</li></ul>
-<div class="hint">昵称可以重复，稳定 ID 各自独立。撤销凭据不会删除成员、进度或批注。user 为保留系统身份。</div></div>
+<div class="hint">显示名可以重复，修改后原凭证继续有效，稳定 ID 和历史记录归属保持不变。user 也可修改显示名，但不能撤销凭据。</div></div>
 <div class="card"><h2>添加共读成员</h2>
 <label for="kind">成员类型</label><select id="kind"><option value="human">人类读者</option><option value="agent">Agent</option></select>
 <label for="nickname">昵称</label><input id="nickname" maxlength="64" placeholder="填写便于识别的名字" autocomplete="off">
@@ -87,11 +92,34 @@ const channels={web:'网页',mcp:'MCP / Bearer','mcp-url':'MCP / 仅 URL',legacy
 async function refresh(){
   const d=await api('/api/members/list',{password:pw()}); const ul=$('list'); ul.replaceChildren();
   for(const m of d.members){
-    const li=document.createElement('li'), box=document.createElement('div');box.style.flex='1';
+    const li=document.createElement('li'), box=document.createElement('div');li.className='member';li.dataset.memberId=m.id;box.className='member-main';
     const title=document.createElement('strong');title.textContent=m.nickname;
     const detail=document.createElement('div');detail.className='hint';
     detail.textContent=m.id+' · '+kinds[m.kind]+' · '+channels[m.credential.channel]+' · '+(m.credential.status==='active'?'有效':'已撤销');
-    box.append(title,detail);li.append(box);
+    const actions=document.createElement('div');actions.className='member-actions';
+    const rename=document.createElement('button');rename.type='button';rename.textContent='修改显示名';actions.append(rename);
+    const form=document.createElement('form');form.className='rename-form';form.hidden=true;
+    const label=document.createElement('label');label.textContent='新显示名';label.htmlFor='rename-'+m.id;
+    const input=document.createElement('input');input.id=label.htmlFor;input.maxLength=64;input.required=true;input.autocomplete='off';
+    const buttons=document.createElement('div');buttons.className='member-actions';
+    const save=document.createElement('button');save.type='submit';save.className='primary';save.textContent='保存显示名';
+    const cancel=document.createElement('button');cancel.type='button';cancel.textContent='取消';buttons.append(save,cancel);
+    const error=document.createElement('div');error.className='msg';error.setAttribute('role','status');
+    form.append(label,input,buttons,error);box.append(title,detail);li.append(box,actions,form);
+    const close=()=>{form.hidden=true;rename.disabled=false;rename.focus();};
+    rename.onclick=()=>{input.value=m.nickname;error.className='msg';form.hidden=false;rename.disabled=true;input.focus();input.select();};
+    cancel.onclick=close;
+    form.onkeydown=e=>{if(e.key==='Escape' && !save.disabled){e.preventDefault();close();}};
+    form.onsubmit=async e=>{
+      e.preventDefault();if(save.disabled)return;
+      const controls=[...li.querySelectorAll('button,input')];controls.forEach(el=>el.disabled=true);
+      try{
+        const d=await api('/api/members/rename',{password:pw(),member_id:m.id,nickname:input.value,expected_nickname:m.nickname});
+        m.nickname=d.member.nickname;title.textContent=m.nickname;form.hidden=true;
+        msg('statusMsg','显示名已更新，原凭证继续有效。阅读器刷新后会显示新名字。',true);
+      }catch(e){error.textContent=e.message;error.className='msg show err';}
+      finally{controls.forEach(el=>el.disabled=false);rename.disabled=!form.hidden;if(form.hidden)rename.focus();}
+    };
     if(m.id!=='user' && m.credential.status==='active'){
       const b=document.createElement('button'); b.textContent='撤销凭据';b.className='danger';
       b.onclick=async()=>{
@@ -99,7 +127,7 @@ async function refresh(){
         b.disabled=true;
         try{await api('/api/credentials/revoke',{password:pw(),member_id:m.id,credential_id:m.credential.id});clearSecret();await refresh();msg('statusMsg','凭据已撤销，历史记录保留。',true);}
         catch(e){msg('statusMsg',e.message);}finally{b.disabled=false;}
-      };li.append(b);
+      };actions.append(b);
     }ul.append(li);
   }
   msg('statusMsg','共 '+d.members.length+' 位成员，列表不返回令牌。',true);
