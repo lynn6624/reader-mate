@@ -251,12 +251,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": self._password_ok(body)})
             return
 
-        if path in ("/api/identities", "/api/members", "/api/members/list", "/api/credentials/revoke"):
+        if path in ("/api/identities", "/api/members", "/api/members/list", "/api/members/rename", "/api/credentials/revoke"):
             if not self._password_ok(body):
                 return self._send(403, {"ok": False, "error": "管理员口令不正确"})
             try:
                 if path == "/api/members/list":
                     return self._send(200, {"ok": True, "members": list(member_store.profiles(load_identities()).values())})
+                if path == "/api/members/rename":
+                    row = member_store.rename(IDENTITIES, body.get("member_id"), body.get("nickname"),
+                                              body.get("expected_nickname"))
+                    return self._send(200, {"ok": True, "member": row})
                 if path == "/api/credentials/revoke":
                     if not valid_name(body.get("member_id")) or not isinstance(body.get("credential_id"), str) or not body["credential_id"]:
                         raise ValueError("需要成员 ID 和凭据 ID")
@@ -291,7 +295,9 @@ class Handler(BaseHTTPRequestHandler):
             except (member_store.StoreError, OSError):
                 return self._send(503, {"ok": False, "error": "身份存储不可用，未提交更改，请检查备份"})
             except (ValueError, TypeError):
-                return self._send(400, {"ok": False, "error": "昵称、成员类型或接入方式无效"})
+                error = ("需要有效成员 ID、原显示名和新的 1–64 字显示名，不能含控制字符"
+                         if path == "/api/members/rename" else "昵称、成员类型或接入方式无效")
+                return self._send(400, {"ok": False, "error": error})
 
         self._send(404, {"ok": False, "error": "没有这个端点"})
 
