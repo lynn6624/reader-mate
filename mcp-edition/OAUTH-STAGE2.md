@@ -1,6 +1,6 @@
 # MCP OAuth 阶段 2：隔离验证记录
 
-日期：2026-11-02 至 11-03（北京时间）。分支 codex/mcp-oauth，PR #11，基线 f38ce92。此轮新增测试副本及临时服务；未部署到生产，未修改生产身份、阅读数据、代理配置或现有凭证。实际 ChatGPT 验收仍在进行，不能据此开始阶段 3 迁移。
+日期：2026-11-02 至 11-03（北京时间）。分支 codex/mcp-oauth，PR #11，基线 f38ce92。阶段 2 隔离验收完成：真实 ChatGPT 的授权、全部工具、自然过期后刷新及撤销后的拒绝均已验证。临时测试服务和隧道已停止，私有审计保留。未部署到生产，未修改生产身份、阅读数据、代理配置或原有接入凭证；阶段 3 正式部署仍需明确确认。
 
 ## 范围与证据
 
@@ -14,7 +14,8 @@
 | Linux 资源预算 | 三业务进程合计硬限额 256 MiB、软限额 192 MiB，三读者并发、两轮大书读写，通过，无 OOM/硬限额事件 | checks/oauth-stage2-20261102/resource-result.json |
 | 服务回滚 | 仅关闭并恢复测试 OAuth；旧 op001 Header、004 URL 均可发现 15 工具并读取；撤销状态跨重启保留，测试业务数据不变 | checks/oauth-stage2-20261102/rollback-result.json |
 | 生产与日志边界 | 已选生产源码/身份/代理配置摘要和三个生产 MainPID 不变，生产及旧测试服务存活；扫描六份新测试日志未发现完整测试凭证 | checks/oauth-stage2-20261102/audit-summary.json |
-| 实际 ChatGPT | 修复后已完成授权码交换，绑定合成 004；用户反馈每个工具均已调用且正常。自动刷新、撤销后的实际客户端行为继续验收 | checks/oauth-stage2-20261102/chatgpt-tools.json |
+| 实际 ChatGPT | 已完成授权码交换、全部工具、自然过期后刷新和同身份续用；按用户明确确认撤销唯一新测试授权后，用户确认实际再次调用被拒绝或要求重新授权 | chatgpt-tools.json、chatgpt-revocation.json |
+| 隔离实验收尾 | 新测试服务和临时隧道已停止，60 秒覆盖配置已移除，测试默认值恢复 900 秒；私有数据库/审计保留，生产及旧测试服务正常 | checks/oauth-stage2-20261102/cleanup-result.json |
 | 生产映射和迁移 | 未执行；合成 004/op004 的测试不能证明生产映射 | 阶段 3 需单独确认 |
 
 JSON 与截图只包含合成数据，不提交活跃测试域名、邀请码、私有导出、数据库或原始日志。截图使用本机临时 CA 场景，不能当作公网证书证据。公网证书流程使用的是临时服务域名；正式域名、长期证书/路由和可用性仍需生产部署评审。
@@ -33,7 +34,9 @@ JSON 与截图只包含合成数据，不提交活跃测试域名、邀请码、
 
 此策略依据 [MCP 2026-07-28 Refresh Tokens](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#refresh-tokens)：客户端可选添加 offline_access，是否签发刷新 Token 由 AS 决定。仍检查注册 grant_type、同意、client/resource/scope、最长寿命和原身份状态，轮换与重放撤销规则不变。新增自动化覆盖无 offline_access 的确认、自然过期、刷新、scope 不扩大、重放、仅授权码客户端及旧授权兼容；真实 ChatGPT 自动刷新须重新授权后单独验收。
 
-00:51（北京时间）ChatGPT 已重新授权，服务器记录 refresh_consented=true，身份和 scope 保持 004 / reader:mcp。00:52:28 只读查询时该授权有效 Access Token 数量为 0；00:53:02 已观察到第 3 次刷新轮换并签发新的有效 Access Token。该间隔证明客户端在自然过期后完成刷新；等待后的实际工具结果由用户单独反馈。授权撤销后的实际客户端行为仍待验证。
+00:51（北京时间）ChatGPT 已重新授权，服务器记录 refresh_consented=true，身份和 scope 保持 004 / reader:mcp。00:52:28 只读查询时该授权有效 Access Token 数量为 0；00:53:02 已观察到第 3 次刷新轮换并签发新的有效 Access Token。随后用户确认等待至少 90 秒后实际调用 list_books 成功，仍显示 004；自动刷新及工具恢复验收通过。
+
+按用户明确确认，00:57 仅撤销上述 00:51 创建的合成 004 OAuth 授权，14 条相关 Access/Refresh 记录均受家族撤销限制；其他授权、测试正文/进度/批注及生产指纹不变。撤销后公网 HTTPS 仍可用（元数据 200、匿名 MCP 401），用户随后确认实际再次调用已拒绝或要求重新授权。此确认发生在服务保持在线期间；验收通过后才于 01:04 停止新测试服务和隧道，不能把停机错误当作撤销证据。见 chatgpt-revocation.json、after-revoke-availability.json 和 cleanup-result.json。
 
 刷新修复提交 e1b9e31 的 [Linux/Python 3.11 CI](https://github.com/lynn6624/reader-mate/actions/runs/41485128782) 已通过协议、原业务兼容及 Chromium 浏览器两个任务。
 
@@ -100,4 +103,4 @@ python core/selftest-oauth-resources.py --fixture /isolated/new-fixture --cgroup
 
 生产部署、正式 004 到底绑定 004 还是 op004、正式数据连续性、长期 HTTPS 路由及旧 URL 凭据撤销仍需阶段 3/4 明确确认。本轮不做这些动作。
 
-真实客户端刷新验收期间，仅新测试 MCP 的运行时 drop-in 将新签发 Access Token 暂设 60 秒；既有 Token 的到期时间不改。用户重新授权并等待至少 90 秒后实际调用 list_books，由客户端续期；服务端只查刷新凭证消费/新签发计数，不读取或代用客户端 Token。测试完成后移除该测试单元的 oauth-refresh-test.conf，恢复合成 fixture 的 access_ttl=900，daemon-reload 后仅重启此测试 MCP；保留数据库、撤销状态与业务数据。该操作不涉及生产单元。
+真实客户端刷新验收期间，仅新测试 MCP 的运行时 drop-in 将新签发 Access Token 暂设 60 秒；既有 Token 的到期时间不改。用户重新授权并等待至少 90 秒后实际调用 list_books，由客户端续期；服务端只查刷新凭证消费/新签发计数，不读取或代用客户端 Token。测试完成后已移除该测试单元的 oauth-refresh-test.conf，恢复合成 fixture 的 access_ttl=900，并停止本轮六个明确命名的测试服务/隧道单元；保留数据库、撤销状态与业务数据。旧测试及生产单元仍 active，所选生产配置/源码摘要及三个 MainPID 与实验前一致。临时 HTTPS URL 现已失效，不能用作正式连接地址。

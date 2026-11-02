@@ -20,7 +20,7 @@
     "refresh_rotations_at_2026_11_02T16_53_02Z": 3,
     "active_access_count_at_2026_11_02T16_53_02Z": 1,
     "refresh_after_natural_expiry_server_observed": true,
-    "post_expiry_tool_result_user_confirmation": "pending"
+    "post_expiry_tool_result_user_confirmation": "success; viewer_id=004"
   },
-  "actual_client_revocation": "pending"
+  "actual_client_revocation": "user confirmed rejection or reauthorization prompt during actual tool call, before test shutdown"
 }

@@ -4,5 +4,7 @@
   "old_test_still_active": true,
   "sensitive_test_log_scan_passed": true,
   "scanned_log_files": 6,
-  "chatgpt_acceptance": "user reported every tool working; code exchange and synthetic 004 verified; natural-expiry refresh observed; post-expiry tool feedback and revocation confirmation pending"
+  "chatgpt_acceptance": "passed: all tools, natural-expiry refresh and actual revocation rejection confirmed by user with server corroboration",
+  "test_services_and_tunnel_stopped": true,
+  "production_unchanged_after_cleanup": true
 }

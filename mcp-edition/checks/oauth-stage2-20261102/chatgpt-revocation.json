@@ -1,0 +1,13 @@
+{
+  "single_test_grant_revoked": true,
+  "reader_id": "004",
+  "scope": "reader:mcp",
+  "revoked_grant_created_utc": "2026-11-02T16:51:05Z",
+  "stored_tokens_blocked_by_revoked_family": 14,
+  "other_grants_unchanged": true,
+  "canonical_test_data_unchanged": true,
+  "production_unchanged": true,
+  "actual_client_rejection": "user confirmed rejected or reauthorization required",
+  "user_confirmation_received": true,
+  "client_rejection_confirmed_before_test_shutdown": true
+}
