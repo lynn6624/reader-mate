@@ -128,8 +128,23 @@ class Protocol(unittest.TestCase):
             self.assertNotIn('Location', response.headers)
         self.assertEqual(self.send('/oauth/authorize?client_id=a&client_id=b').status_code, 400)
         for redirect in ('http://client.example/cb', 'https://client.example/cb#frag',
-                         'https://user:password@client.example/cb', 'https://*.example/cb'):
+                         'https://user:password@client.example/cb', 'https://*.example/cb',
+                         'https://client.example;evil/cb', "https://client.example'evil/cb"):
             self.assertEqual(self.send('/oauth/register', method='POST', json={'redirect_uris':[redirect]}).status_code, 400)
+
+    def test_form_policy_allows_only_validated_callback_origin(self):
+        verifier = secrets.token_urlsafe(48)
+        params = dict(client_id=self.client_id, response_type='code', redirect_uri=CALLBACK,
+                      scope='reader:mcp', resource=self.config.resource,
+                      code_challenge=create_s256_code_challenge(verifier), code_challenge_method='S256')
+        page = self.send('/oauth/authorize', query_string=params)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("form-action 'self' https://client.example.test;", page.headers['Content-Security-Policy'])
+        params['redirect_uri'] = 'https://evil.example/callback'
+        rejected = self.send('/oauth/authorize', query_string=params)
+        self.assertEqual(rejected.status_code, 400)
+        self.assertNotIn('evil.example', rejected.headers['Content-Security-Policy'])
+        self.assertIn("form-action 'self';", rejected.headers['Content-Security-Policy'])
 
     def test_invitation_expiry_csrf_cancel_and_single_use(self):
         _, csrf = self.start()
@@ -296,6 +311,22 @@ class Protocol(unittest.TestCase):
         reloaded = Store(self.config.db, ISSUER, self.config.resource)
         self.assertFalse(reloaded.limited('test', 'source', 1, 10))
 
+    def test_privacy_redacted_form_origin_still_requires_cookie_and_csrf(self):
+        _, csrf = self.start()
+        _, invite = self.store.invite('004')
+        headers = {'Origin':'null'}
+        self.assertEqual(self.send('/oauth/authorize', method='POST', headers=headers,
+            data=dict(csrf='wrong', action='verify', invite=invite)).status_code, 403)
+        self.assertEqual(self.send('/oauth/authorize', self.app.test_client(), method='POST', headers=headers,
+            data=dict(csrf=csrf, action='verify', invite=invite)).status_code, 403)
+        self.assertEqual(self.send('/oauth/authorize', method='POST', headers={'Origin':'https://evil.example'},
+            data=dict(csrf=csrf, action='verify', invite=invite)).status_code, 403)
+        self.assertEqual(self.send('/oauth/authorize', method='POST', headers=headers,
+            data=dict(csrf=csrf, action='verify', invite=invite)).status_code, 200)
+        self.assertEqual(self.send('/oauth/authorize', method='POST', headers=headers,
+            data=dict(csrf=csrf, action='approve')).status_code, 302)
+        self.assertEqual(self.send('/oauth/token', method='POST', headers=headers).status_code, 403)
+
     def test_backend_redirect_never_transmits_reader_key_to_another_service(self):
         captured = []
         class Sink(BaseHTTPRequestHandler):
@@ -362,6 +393,8 @@ async def http_mcp():
         identities.write_text(json.dumps(ids), encoding='utf-8')
         original_ids = identities.read_bytes()
         (books/'test.txt').write_text('第一章\n你好😀一起读书。\n第二段。', encoding='utf-8')
+        large_text='甲😀乙。\n'*26000
+        (books/'large.txt').write_text(large_text,encoding='utf-8')
         for name, content in (('path-key', 'T'*24), ('gpt-key', 'G'*24)):
             (base/name).write_text(content); (base/name).chmod(0o600)
         config = Config(str(base/'state'/'oauth.sqlite3'), ISSUER, ISSUER+'/mcp')
@@ -453,6 +486,17 @@ async def http_mcp():
                     highlight = await call('add_highlight', dict(name='test.txt', start=4, end=6, text='你好'))
                     comment = await call('add_comment', dict(name='test.txt', highlight_id=highlight['id'], text='OAuth 连续性测试'))
                     assert comment['annotation']['author_id'] == '004'
+                    large_raw=large_text.encode('utf-16-le')
+                    for offset,length in ((100000,11),(100001,3),(len(large_raw)//2,1)):
+                        result=await call('read_book',dict(name='large.txt',offset=offset,length=length))
+                        end=min(len(large_raw)//2,offset+length)
+                        expected=large_raw[offset*2:end*2].decode('utf-16-le',errors='ignore')
+                        assert result['text']==expected and result['total_units']==len(large_raw)//2
+                        assert result['next_offset']==offset+len(expected.encode('utf-16-le'))//2
+                    invalid=await session.call_tool('read_book',dict(name='large.txt',offset=100004,length=3))
+                    assert invalid.isError
+                    await call('update_progress',dict(name='large.txt',offset=100000))
+                    assert (await call('get_reading_progress',dict(name='large.txt')))['progress']['offset']==100000
                     # Caller-supplied identity must not become an authenticated identity.
                     spoof = await session.call_tool('list_books', {'who':'user', 'viewer_id':'user'})
                     if not spoof.isError:

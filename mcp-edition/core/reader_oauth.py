@@ -7,7 +7,7 @@ from starlette.middleware.wsgi import WSGIMiddleware
 from starlette.responses import JSONResponse
 
 import member_store
-from oauth_server import Config, SCOPE, create_server
+from oauth_server import Config, SCOPE, browser_origin_allowed, create_server
 from oauth_store import StoreError
 
 
@@ -73,7 +73,8 @@ class OAuthRouter:
         if scope.get('scheme') != 'https' and not trusted_proxy:
             return await self.failure(scope, receive, send, 400, 'invalid_request')
         origins = [value.decode('ascii', 'replace') for key, value in scope['headers'] if key.lower() == b'origin']
-        if origins and origins != [self.config.issuer]:
+        if (len(origins) > 1 or not browser_origin_allowed(origins[0] if origins else None,
+                self.config.issuer, scope.get('path'), scope.get('method'))):
             return await self.failure(scope, receive, send, 403, 'invalid_request')
         scope = dict(scope, scheme='https', headers=[(key, value) for key, value in scope['headers']
                                                    if key.lower() != b'host'])

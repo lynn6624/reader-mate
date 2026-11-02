@@ -65,6 +65,7 @@ mcp = FastMCP("ReaderMate", stateless_http=True, json_response=True,
                             "不会自动保存进度；实际读完后调用 update_progress 保存。"))
 API = os.environ.get("READER_API_URL", "http://127.0.0.1:8831").rstrip("/")
 GUIDE_FILE = os.path.join(os.path.dirname(__file__), reader.REFERENCE_BOOK_NAME)
+_oauth_backend_gate = asyncio.Semaphore(1)
 
 def bearer(headers):
     value = headers.get("authorization", "")
@@ -86,8 +87,23 @@ def backend_open(ctx, req):
             def redirect_request(self, req, fp, code, msg, headers, newurl):
                 return None
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-        return opener.open(req, timeout=30)
+        return opener.open(req, timeout=60)
     return urllib.request.urlopen(req, timeout=30)
+
+
+async def backend_task(ctx, request):
+    if not ctx.request_context.request.scope.get("reader_oauth"):
+        return await asyncio.to_thread(request)
+    # Bound cold-cache index/text work in the existing Web process. Keep the
+    # lease until the worker actually finishes, including client cancellation.
+    await _oauth_backend_gate.acquire()
+    task = asyncio.create_task(asyncio.to_thread(request))
+    def completed(value):
+        _oauth_backend_gate.release()
+        if not value.cancelled():
+            value.exception()  # retrieve exceptions if the awaiting client disconnected
+    task.add_done_callback(completed)
+    return await asyncio.shield(task)
 
 
 async def api(ctx, path, payload=None, method=None):
@@ -113,7 +129,7 @@ async def api(ctx, path, payload=None, method=None):
                 exc.code, detail.get("error", exc.reason),
                 " (current_revision=%s)" % detail["current_revision"]
                 if "current_revision" in detail else "")) from exc
-    return await asyncio.to_thread(request)
+    return await backend_task(ctx, request)
 
 @mcp.tool()
 async def get_calling_guide(ctx: Context) -> dict:
@@ -137,19 +153,25 @@ async def read_book(name: str, ctx: Context, offset: int = 0, length: int = 3000
     """Read a bounded UTF-16 range. Use next_offset to continue; call update_progress to save, never automatic."""
     if offset < 0 or not 1 <= length <= 12000:
         raise ValueError("offset >= 0; length 1..12000")
-    book = await api(ctx, "/api/book?" + urllib.parse.urlencode({"name": name}))
+    query = {"name": name}
+    if ctx.request_context.request.scope.get("reader_oauth"):
+        query.update(window=1, offset=offset)
+    book = await api(ctx, "/api/book?" + urllib.parse.urlencode(query))
     raw = book["text"].encode("utf-16-le")
-    if offset * 2 > len(raw):
+    base = book.get("text_base", 0)
+    total_units = book.get("total_units", len(raw) // 2)
+    relative = offset - base
+    if offset > total_units or not 0 <= relative * 2 <= len(raw):
         raise ValueError("Offset past end of book")
-    end = min(len(raw), (offset + length) * 2)
+    end = min(len(raw), (relative + length) * 2)
     # Don't split a surrogate pair at the trailing edge; reject invalid input starts.
     try:
-        text = raw[offset * 2:end].decode("utf-16-le")
+        text = raw[relative * 2:end].decode("utf-16-le")
     except UnicodeDecodeError:
         end -= 2
-        text = raw[offset * 2:end].decode("utf-16-le")
-    return {"name": book["name"], "offset": offset, "next_offset": end // 2,
-            "total_units": len(raw) // 2, "text": text,
+        text = raw[relative * 2:end].decode("utf-16-le")
+    return {"name": book["name"], "offset": offset, "next_offset": base + end // 2,
+            "total_units": total_units, "text": text,
             "book_revision": book["book_revision"], "by_who": book["by_who"],
             "publication_generation": book.get("publication_generation", 0),
             "reminder": ("阅读进度不会随 read_book 自动保存。实际读完后请调用 "
@@ -231,7 +253,7 @@ async def add_comment(name: str, highlight_id: str, text: str, ctx: Context) -> 
         req = urllib.request.Request(API + "/api/notes/comment", data=json.dumps(data).encode(), headers=headers)
         with backend_open(ctx, req) as response:
             return json.load(response)
-    return await asyncio.to_thread(request)
+    return await backend_task(ctx, request)
 
 @mcp.tool()
 async def delete_highlight(name: str, highlight_id: str, ctx: Context) -> dict:
@@ -249,19 +271,25 @@ async def update_progress(name: str, offset: int, ctx: Context,
     Published books require book_revision from the read_book response actually
     read by the caller. Unpublished books retain the legacy version fallback.
     """
-    book = await api(ctx, "/api/book?" + urllib.parse.urlencode({"name": name}))
+    query = {"name": name}
+    if ctx.request_context.request.scope.get("reader_oauth"):
+        query.update(window=1, offset=offset)
+    book = await api(ctx, "/api/book?" + urllib.parse.urlencode(query))
     if book.get("publication_generation", 0) > 0 and not book_revision:
         raise ValueError("此书已发布新版，请重新调用 read_book 阅读当前正文，并传入返回的 book_revision 后保存进度")
     who, _ = credentials(ctx)
     raw = book["text"].encode("utf-16-le")
-    units = len(raw) // 2
+    units = book.get("total_units", len(raw) // 2)
+    relative = offset - book.get("text_base", 0)
     if not 0 <= offset <= units:
         raise ValueError("Offset outside book")
-    raw[:offset*2].decode("utf-16-le")  # reject mid-surrogate offsets
+    if not 0 <= relative * 2 <= len(raw):
+        raise ValueError("Offset outside book window")
+    raw[:relative*2].decode("utf-16-le")  # reject mid-surrogate offsets
     prior = book["by_who"].get(who, {})
     if expected_revision < 0:
         expected_revision = int(prior.get("revision") or 0)
-    anchor = raw[offset*2:].decode("utf-16-le")[:40]
+    anchor = raw[relative*2:].decode("utf-16-le")[:40]
     return await api(ctx, "/api/progress", {"name": name, "offset": offset,
         "chars": units, "percent": offset / units if units else 0,
         "anchor": anchor, "tts_offset": prior.get("tts_offset", 0),

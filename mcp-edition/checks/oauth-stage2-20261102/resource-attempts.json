@@ -1,0 +1,40 @@
+[
+  {
+    "scope": "extra launcher/proxy included",
+    "elapsed_seconds": 184.551,
+    "sampled_peak_bytes": 221954048,
+    "pass_": false,
+    "reason": "timeout; older kernel lacked memory.peak; original test offset also invalid"
+  },
+  {
+    "scope": "extra launcher/proxy included; windowed reads",
+    "elapsed_seconds": 31.142,
+    "sampled_peak_bytes": 211521536,
+    "pass_": false,
+    "reason": "read failed; high soft-limit pressure; invalid UTF-16 test offset"
+  },
+  {
+    "scope": "extra launcher/proxy included; bounded backend",
+    "elapsed_seconds": 60.686,
+    "sampled_peak_bytes": 214294528,
+    "pass_": false,
+    "reason": "client read timeout"
+  },
+  {
+    "scope": "production-equivalent three services",
+    "elapsed_seconds": 4.282,
+    "sampled_peak_bytes": 203481088,
+    "pass_": false,
+    "reason": "invalid UTF-16 offset 20; corrected to valid offset 25"
+  },
+  {
+    "scope": "production-equivalent three services; valid offset 25",
+    "elapsed_seconds": 6.844,
+    "sampled_peak_bytes": 203616256,
+    "pass_": true,
+    "hard_limit_events": 0,
+    "oom_events": 0,
+    "oom_kills": 0,
+    "soft_limit_events": 23
+  }
+]

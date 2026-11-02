@@ -1,0 +1,11 @@
+{
+  "pass_": true,
+  "feature_off_bare_mcp_404": true,
+  "legacy_header_op001": true,
+  "legacy_url_004": true,
+  "feature_restored_anonymous_401": true,
+  "revocation_survives_restart": true,
+  "canonical_test_data_unchanged": true,
+  "production_unchanged": true,
+  "new_test_runtime_dropin_removed": true
+}

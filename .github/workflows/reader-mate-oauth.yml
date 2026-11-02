@@ -31,3 +31,28 @@ jobs:
       - run: python core/selftest-members.py --no-browser
       - run: python core/selftest-proposals.py --no-browser
       - run: python core/selftest-publication-integration.py
+
+  browser:
+    needs: oauth
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: mcp-edition
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: 'mcp-edition/core/requirements-*.txt'
+      - run: python -m pip install -r core/requirements-oauth-e2e.txt
+      - run: python -m playwright install --with-deps chromium
+      - run: python core/selftest-oauth-browser.py --artifacts /tmp/oauth-browser-artifacts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: oauth-browser-desktop-mobile
+          path: /tmp/oauth-browser-artifacts

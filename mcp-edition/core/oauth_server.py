@@ -1,6 +1,8 @@
 """Reusable Authlib authorization server. The identity adapter supplies only subject lookup."""
 from dataclasses import dataclass
 from functools import wraps
+import base64
+import hashlib
 import json
 import hmac
 import logging
@@ -30,6 +32,12 @@ AUTH_PARAMS = ('client_id', 'response_type', 'redirect_uri', 'resource', 'scope'
                'code_challenge', 'code_challenge_method')
 
 
+def browser_origin_allowed(origin, issuer, path, method):
+    # Chrome can redact a form navigation's Origin to "null" under no-referrer.
+    # Only this cookie + independently verified CSRF endpoint permits that value.
+    return origin in (None, issuer) or (origin == 'null' and path == '/oauth/authorize' and method == 'POST')
+
+
 def https_uri(value):
     if not isinstance(value, str) or not 1 <= len(value) <= 2048:
         return False
@@ -37,7 +45,8 @@ def https_uri(value):
         value.encode('ascii')
         parts = urlsplit(value)
         reserved = {'code', 'state', 'iss', 'error', 'error_description'}
-        return (parts.scheme == 'https' and bool(parts.hostname) and not parts.username
+        return (parts.scheme == 'https' and bool(parts.hostname)
+                and bool(re.fullmatch(r'[A-Za-z0-9.:\[\]-]+', parts.netloc)) and not parts.username
                 and not parts.password and not parts.fragment and '#' not in value
                 and not re.search(r'[\s\\\x00-\x1f\x7f*]', value)
                 and not reserved.intersection(key for key, _ in parse_qsl(parts.query))
@@ -134,8 +143,16 @@ class Server(AuthorizationServer):
         return value if isinstance(value, OAuth2Request) else super().create_oauth2_request(value)
 
 
-PAGE = '''<!doctype html><html lang="zh-CN"><meta charset="utf-8">
+STYLE = '''body{margin:0;padding:20px;background:#f5f2ec;color:#292e2c;font-family:system-ui,sans-serif;line-height:1.65}
+main{box-sizing:border-box;max-width:36rem;margin:2rem auto;padding:24px;background:white;border:1px solid #e5dfd4;border-radius:12px}
+h1{margin-top:0;font-size:1.6rem}p{overflow-wrap:anywhere}label{display:block}input[type=password]{box-sizing:border-box;width:100%;min-height:44px;padding:8px;margin-top:6px;font:inherit}
+button{min-height:44px;margin:12px 8px 0 0;padding:8px 18px;font:inherit;border:1px solid #365c59;border-radius:6px;background:#365c59;color:white;cursor:pointer}
+button[value=deny]{background:white;color:#454b48;border-color:#b7beb9}'''
+STYLE_HASH = base64.b64encode(hashlib.sha256(STYLE.encode()).digest()).decode()
+
+PAGE = '''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>小书桌授权</title>
+<style>{{ style|safe }}</style></head>
 <body><main><h1>连接小书桌</h1>
 <p>回调地址：<b>{{ redirect }}</b></p><p>客户端标识：{{ client }}</p>
 <p>权限：读取共享书籍、管理自己的进度和批注、提交建议；仍受原有读者权限限制。</p>
@@ -249,7 +266,8 @@ def create_server(config, lookup_subject):
     def transport_and_limits():
         if request.host != urlsplit(config.issuer).netloc or request.scheme != 'https':
             return error('invalid_request')
-        if request.method == 'POST' and request.headers.get('Origin') not in (None, config.issuer):
+        if request.method == 'POST' and not browser_origin_allowed(
+                request.headers.get('Origin'), config.issuer, request.path, request.method):
             return error('invalid_request', 403)
         for values in (request.args, request.form):
             if any(len(values.getlist(key)) != 1 for key in values):
@@ -266,9 +284,14 @@ def create_server(config, lookup_subject):
 
     @app.after_request
     def protect_response(response):
+        # Chrome checks a form's cross-origin 302 destination against this policy.
+        # Only a redirect already validated against the client's registration is added.
+        form_targets = "'self'"
+        if getattr(g, 'form_redirect_origin', None):
+            form_targets += ' ' + g.form_redirect_origin
         response.headers.update({'Cache-Control': 'no-store', 'Pragma': 'no-cache',
             'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
-            'Content-Security-Policy': "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+            'Content-Security-Policy': "default-src 'none'; style-src 'sha256-"+STYLE_HASH+"'; form-action "+form_targets+"; frame-ancestors 'none'; base-uri 'none'",
             'X-Frame-Options': 'DENY'})
         return response
 
@@ -421,12 +444,14 @@ def create_server(config, lookup_subject):
                 return response
             else:
                 return error()
+        target = urlsplit(params['redirect_uri'])
+        g.form_redirect_origin = target.scheme + '://' + target.netloc
         store.put(g.db, 'transaction', key, value)
         invitation = store.get(g.db, 'invite', value['invite']) if value['invite'] else None
         subject = invitation['subject'] if invitation else ''
         response = make_response(render_template_string(PAGE, csrf=csrf, subject=subject,
             nickname=lookup_subject(subject) if subject else '', redirect=params['redirect_uri'],
-            client=params['client_id'], offline='offline_access' in params.get('scope', '').split()))
+            client=params['client_id'], style=STYLE, offline='offline_access' in params.get('scope', '').split()))
         response.set_cookie(COOKIE, cookie, max_age=600, secure=True, httponly=True, samesite='Lax', path='/')
         return response
 

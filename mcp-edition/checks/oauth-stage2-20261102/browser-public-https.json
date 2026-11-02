@@ -1,0 +1,32 @@
+{
+  "public_https": true,
+  "browser": "Chrome",
+  "tls": "public CA verification enabled; no certificate exceptions",
+  "production_access": false,
+  "pass": true,
+  "tls_metadata": true,
+  "step": "mobile_token_mcp",
+  "browser_responses": [
+    {
+      "path": "/oauth/authorize",
+      "status": 200
+    },
+    {
+      "path": "/oauth/authorize",
+      "status": 200
+    },
+    {
+      "path": "/oauth/authorize",
+      "status": 302
+    },
+    {
+      "path": "/client-callback",
+      "status": 200
+    }
+  ],
+  "desktop_secure_cookie": true,
+  "public_refresh_and_reconnect": true,
+  "desktop_authorization_mcp_revoke": true,
+  "mobile_secure_cookie": true,
+  "mobile_authorization_mcp_revoke": true
+}

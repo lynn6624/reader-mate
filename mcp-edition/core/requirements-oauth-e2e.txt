@@ -1,0 +1,2 @@
+-r requirements-oauth.txt
+playwright==1.60.0

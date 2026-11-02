@@ -1,0 +1,8 @@
+{
+  "production_unchanged": true,
+  "production_services_active": true,
+  "old_test_still_active": true,
+  "sensitive_test_log_scan_passed": true,
+  "scanned_log_files": 6,
+  "chatgpt_acceptance": "first consent succeeded, code not exchanged; CSP fix installed in test; user retry pending"
+}
