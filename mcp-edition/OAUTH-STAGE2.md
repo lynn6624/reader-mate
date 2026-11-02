@@ -33,6 +33,10 @@ JSON 与截图只包含合成数据，不提交活跃测试域名、邀请码、
 
 此策略依据 [MCP 2026-07-28 Refresh Tokens](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#refresh-tokens)：客户端可选添加 offline_access，是否签发刷新 Token 由 AS 决定。仍检查注册 grant_type、同意、client/resource/scope、最长寿命和原身份状态，轮换与重放撤销规则不变。新增自动化覆盖无 offline_access 的确认、自然过期、刷新、scope 不扩大、重放、仅授权码客户端及旧授权兼容；真实 ChatGPT 自动刷新须重新授权后单独验收。
 
+00:51（北京时间）ChatGPT 已重新授权，服务器记录 refresh_consented=true，身份和 scope 保持 004 / reader:mcp。00:52:28 只读查询时该授权有效 Access Token 数量为 0；00:53:02 已观察到第 3 次刷新轮换并签发新的有效 Access Token。该间隔证明客户端在自然过期后完成刷新；等待后的实际工具结果由用户单独反馈。授权撤销后的实际客户端行为仍待验证。
+
+刷新修复提交 e1b9e31 的 [Linux/Python 3.11 CI](https://github.com/lynn6624/reader-mate/actions/runs/41485128782) 已通过协议、原业务兼容及 Chromium 浏览器两个任务。
+
 ## 资源结果的解释
 
 测试环境通过现有 Workbench CLI 访问，使用新的私有目录、虚拟环境、SQLite、合成书库与短期 systemd 服务。测试服务限制写入新目录，并禁止访问生产和旧测试数据目录。未修改生产 Caddy、现有隧道、DNS 或正式服务。

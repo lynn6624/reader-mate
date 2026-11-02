@@ -4,5 +4,5 @@
   "old_test_still_active": true,
   "sensitive_test_log_scan_passed": true,
   "scanned_log_files": 6,
-  "chatgpt_acceptance": "user reported every tool working; server observed code exchange and synthetic subject 004; refresh/revocation pending"
+  "chatgpt_acceptance": "user reported every tool working; code exchange and synthetic 004 verified; natural-expiry refresh observed; post-expiry tool feedback and revocation confirmation pending"
 }

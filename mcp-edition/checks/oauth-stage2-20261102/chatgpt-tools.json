@@ -9,6 +9,18 @@
   "user_reported_every_tool_exercised_successfully": true,
   "per_tool_server_trace_collected": false,
   "refresh_tokens_issued_before_compatibility_fix": 0,
-  "actual_client_refresh_after_fix": "pending reauthorization",
+  "actual_client_refresh_after_fix": {
+    "scope": "reader:mcp",
+    "reader_id": "004",
+    "refresh_consented": true,
+    "grant_created_at_utc": "2026-11-02T16:51:05Z",
+    "test_access_ttl_seconds": 60,
+    "early_refresh_rotations_observed": 2,
+    "active_access_count_at_2026_11_02T16_52_28Z": 0,
+    "refresh_rotations_at_2026_11_02T16_53_02Z": 3,
+    "active_access_count_at_2026_11_02T16_53_02Z": 1,
+    "refresh_after_natural_expiry_server_observed": true,
+    "post_expiry_tool_result_user_confirmation": "pending"
+  },
   "actual_client_revocation": "pending"
 }
