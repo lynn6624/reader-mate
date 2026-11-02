@@ -28,7 +28,9 @@ Windows、Python 3.14.2，最终 OAuth/共读/成员/建议测试使用 MCP 1.30
 
 ## CI 与后续验收
 
-新增 `.github/workflows/reader-mate-oauth.yml`，在 Ubuntu/Python 3.11 安装精确直接依赖并运行上述五组自测，不使用部署凭据、生产 SSH 或其他 secrets。CI 成功前不能把“已配置工作流”写为“Linux 已通过”；最新运行状态以 PR 检查为准。
+新增 `.github/workflows/reader-mate-oauth.yml`，在 Ubuntu/Python 3.11 安装精确直接依赖并运行上述五组自测，不使用部署凭据、生产 SSH 或其他 secrets。
+
+实现提交 `34dc97d0b1b6677ff279192f43d2cc60cae0a3d0` 的 [Linux/Python 3.11 CI 运行 41448065951](https://github.com/lynn6624/reader-mate/actions/runs/41448065951) 已完成且成功，核对了依赖安装及五个测试步骤均为 success。该结果验证实际 Linux/Python 3.11 运行，不验证生产配额或浏览器；后续提交状态以 PR 检查为准。
 
 | 尚待阶段 2 / 3 验证 | 当前状态 |
 | --- | --- |
@@ -36,7 +38,6 @@ Windows、Python 3.14.2，最终 OAuth/共读/成员/建议测试使用 MCP 1.30
 | 真实浏览器 Secure Cookie、确认页、回调布局及行为 | 未执行；当前 HTTP 自测模拟 TLS 终止代理并手动传测试 Cookie |
 | 实际 ChatGPT 添加无秘密 URL、自动发现和登录 | 未执行 |
 | 实际客户端刷新/断线恢复、撤销已连接授权 | 未执行；本地协议/MCP 行为已覆盖 |
-| Linux/Python 3.11 实际运行 | 交由新增 CI 验证；本机只有 Windows/Python 3.14 |
 | Linux 256 MiB slice 下峰值、节流与 OOM | 未执行；不以数据库上限或代码大小代替内存测试 |
 | 完整测试环境代理/服务回滚演练 | 未执行；功能关闭和旧接入已本机回归 |
 | 生产 004 的精确身份映射及真实进度/建议连续性 | 未执行；临时 004/op004 不代表已读取生产映射 |
