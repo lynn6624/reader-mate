@@ -1,6 +1,6 @@
 # 共享草稿发布、位置迁移与回滚（B5）
 
-候选实现，尚未上线。2026-11-02完成保持256MiB额度的内存优化：Linux/glibc Web服务须同时安装 deploy/reader-web-memory.conf 中的两个分配器环境设置。近上限HTTP Web峰值降至约101MiB，256MiB/192MiB软限加模拟其他服务占用验证通过。无该设置的原基准会超正式总预算，不能只部署代码。详见 PUBLICATION-VALIDATION.md。
+2026-11-02已完成正式替换部署，原书未自动发布。已完成保持256MiB额度的内存优化：Linux/glibc Web服务须同时安装 deploy/reader-web-memory.conf 中的两个分配器环境设置。近上限HTTP Web峰值降至约101MiB，256MiB/192MiB软限加模拟其他服务占用验证通过。无该设置的原基准会超正式总预算，不能只部署代码。详见 PUBLICATION-VALIDATION.md。
 
 本功能沿用 TXT 正文、共享管理员草稿、现有身份及 JSON 数据文件。接受建议只修改草稿；主人在书库抽屉打开「发布与回滚」，检查影响并勾选确认后，才发布整份当前草稿。没有面向 Agent 的发布工具。不会自动发布、批量改书或清理历史。
 
