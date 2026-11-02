@@ -1,6 +1,6 @@
 # 共享草稿发布、位置迁移与回滚（B5）
 
-候选实现，尚未上线。2026-11-02实测近上限HTTP的Web峰值215.65MiB，加既有其他服务会超过正式256MiB预算；完成优化或重新确认资源方案前不得部署。详见 PUBLICATION-VALIDATION.md。
+候选实现，尚未上线。2026-11-02完成保持256MiB额度的内存优化：Linux/glibc Web服务须同时安装 deploy/reader-web-memory.conf 中的两个分配器环境设置。近上限HTTP Web峰值降至约101MiB，256MiB/192MiB软限加模拟其他服务占用验证通过。无该设置的原基准会超正式总预算，不能只部署代码。详见 PUBLICATION-VALIDATION.md。
 
 本功能沿用 TXT 正文、共享管理员草稿、现有身份及 JSON 数据文件。接受建议只修改草稿；主人在书库抽屉打开「发布与回滚」，检查影响并勾选确认后，才发布整份当前草稿。没有面向 Agent 的发布工具。不会自动发布、批量改书或清理历史。
 
@@ -77,6 +77,8 @@ MCP 仍为 15 个工具，新增两个可选 Schema 参数，均追加在旧参�
 ## 部署与代码回退
 
 先在隔离书库运行下列自测并检查资源报告；不要用唯一正式原本作实验。升级时停 Web/MCP，创建完整冷备份，成套替换 core 中四个 publication_*.py、reader_server.py、mcp_server.py、web/reader.html、web/editor.js、web/publication.js、维护工具和调用参考；只读参考副本经确认后同步。私有路径钥匙、身份文件、代理 Host 配置及 token 管理目录原样保留。启动先看恢复日志再做只读检查。不需要改 DNS、代理或 Kindle 扩展。
+
+当前Linux/glibc部署需把 deploy/reader-web-memory.conf 安装为 reader-web.service 的 systemd drop-in（例如 /etc/systemd/system/reader-web.service.d/20-publication-memory.conf），daemon-reload后重启Web，并核对该进程环境包含 MALLOC_ARENA_MAX=1、MALLOC_TRIM_THRESHOLD_=131072。保留原 reader-mate.slice 的 MemoryHigh=192MiB、MemoryMax=256MiB，不改MCP/管理页配置。不适用的系统应先重复资源测试，不能套用Windows数值。移除该优化会恢复原高内存风险；已有发布代次时仍必须保留B5兼容代码。
 
 尚无正式发布时可以停服回退到此前完整代码，保留新增元数据。已有发布或回滚代次时，代码回退也必须保留 B5 的屏障、恢复和版本校验；正文回滚不解除此要求。即使正文回到旧 hash，generation 仍递增，旧无版本调用仍拒写。事故完整冷备恢复会回退备份之后的全部写入，必须明确确认；不能只恢复 TXT 或旧 notes/progress。
 
