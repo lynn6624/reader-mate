@@ -1,0 +1,33 @@
+name: Reader-Mate OAuth isolation
+
+on:
+  pull_request:
+    paths:
+      - 'mcp-edition/**'
+      - '.github/workflows/reader-mate-oauth.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  oauth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: mcp-edition
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: 'mcp-edition/core/requirements-*.txt'
+      - run: python -m pip install -r core/requirements-oauth.txt
+      - run: python core/selftest-oauth.py
+      - run: python core/selftest-cloud.py
+      - run: python core/selftest-members.py --no-browser
+      - run: python core/selftest-proposals.py --no-browser
+      - run: python core/selftest-publication-integration.py

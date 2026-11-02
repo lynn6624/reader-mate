@@ -44,6 +44,16 @@ public_host = os.environ.get("READER_MCP_PUBLIC_HOST", "").strip()
 # host is used by 004/ChatGPT and must pass FastMCP's Host/Origin checks too.
 extra_host = os.environ.get("READER_MCP_EXTRA_HOST", "mcp.example.com").strip()
 public_hosts = list(dict.fromkeys(h for h in (public_host, extra_host) if h))
+oauth_config = None
+if os.environ.get("READER_OAUTH_ENABLED", "0") == "1":
+    from reader_oauth import Config, OAuthRouter
+    oauth_config = Config.from_env()
+    oauth_host = urllib.parse.urlsplit(oauth_config.issuer).netloc
+    oauth_hostname = urllib.parse.urlsplit(oauth_config.issuer).hostname
+    legacy_hostnames = {urllib.parse.urlsplit("https://" + host).hostname for host in public_hosts}
+    if oauth_hostname in legacy_hostnames or oauth_hostname in ("localhost", "127.0.0.1", "::1"):
+        raise RuntimeError("OAuth requires a dedicated public host, distinct from legacy hosts")
+    public_hosts.append(oauth_host)
 security = TransportSecuritySettings(
     allowed_hosts=["127.0.0.1:*", "localhost:*"] +
                   [entry for host in public_hosts for entry in (host, host + ":443")],
@@ -68,6 +78,18 @@ def credentials(ctx):
         raise ValueError("Invalid identity credential")
     return who, token
 
+def backend_open(ctx, req):
+    if ctx.request_context.request.scope.get("reader_oauth"):
+        # The OAuth adapter validates API as loopback-only. Do not forward
+        # credentials through redirects or an environment-configured proxy.
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        return opener.open(req, timeout=30)
+    return urllib.request.urlopen(req, timeout=30)
+
+
 async def api(ctx, path, payload=None, method=None):
     who, token = credentials(ctx)
     def request():
@@ -80,7 +102,7 @@ async def api(ctx, path, payload=None, method=None):
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(API + path, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=30) as response:
+            with backend_open(ctx, req) as response:
                 return json.load(response)
         except urllib.error.HTTPError as exc:
             try:
@@ -207,7 +229,7 @@ async def add_comment(name: str, highlight_id: str, text: str, ctx: Context) -> 
                 "who": "user" if who == "user" else "ai"}
         headers = {"X-Who-Token": token, "X-Token": reader.TOKEN, "Content-Type": "application/json"}
         req = urllib.request.Request(API + "/api/notes/comment", data=json.dumps(data).encode(), headers=headers)
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with backend_open(ctx, req) as response:
             return json.load(response)
     return await asyncio.to_thread(request)
 
@@ -347,8 +369,10 @@ class ChatGPT004Gateway:
         await self.app(scope, receive, send)
 
 app = ChatGPT004Gateway(IdentityGate(mcp.streamable_http_app()))
+if oauth_config is not None:
+    app = OAuthRouter(app, oauth_config, reader.IDENTITIES_FILE, MCP_PATH, API)
 if __name__ == "__main__":
     if not reader.CLOUD or "user" not in reader.load_identities():
         raise SystemExit("Set READER_CLOUD=1 and configure data/identities.json first")
     uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("READER_MCP_PORT", "8832")),
-                access_log=False)
+                access_log=False, proxy_headers=False if oauth_config else True)

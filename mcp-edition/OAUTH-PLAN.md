@@ -1,6 +1,6 @@
 # MCP OAuth 实施与验收设计
 
-状态：阶段 0 设计，尚未实现、未运行 OAuth 测试、未部署。需求见 [OAUTH-REQUIREMENTS.md](OAUTH-REQUIREMENTS.md)，现有代码审计见 [OAUTH-AUDIT.md](OAUTH-AUDIT.md)。以下路径、配置名和测试脚本名均为拟议接口，不能当作现已可用的命令。
+状态：阶段 0 设计快照。阶段 1 已在独立分支实现，当前可用接口和已执行结果见 [OAUTH.md](OAUTH.md) 及 [OAUTH-VALIDATION.md](OAUTH-VALIDATION.md)，尚未部署。需求见 [OAUTH-REQUIREMENTS.md](OAUTH-REQUIREMENTS.md)，现有代码审计见 [OAUTH-AUDIT.md](OAUTH-AUDIT.md)。本文保留初始拟议路径、配置名和测试设计，与实际实现存在差异的部分以阶段 1 文档为准。
 
 ## 入口与模块
 
