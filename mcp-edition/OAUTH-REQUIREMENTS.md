@@ -1,8 +1,11 @@
 # Reader-Mate｜MCP OAuth 授权接入需求单 v0.1
 
-项目：小书桌（Reader-Mate）  
-开发性质：独立功能分支 / 独立 PR  
-优先级：P0  
+项目：小书桌（Reader-Mate）
+
+开发性质：独立功能分支 / 独立 PR
+
+优先级：P0
+
 实施原则：新旧接入并行、身份隔离不变、先验证后迁移、通用组件可复用
 
 本文存档用户于 2026-11-02 提交的需求。阶段 0 审计见 [OAUTH-AUDIT.md](OAUTH-AUDIT.md)，实施及验收设计见 [OAUTH-PLAN.md](OAUTH-PLAN.md)。此文档不表示 OAuth 已实现或已部署。
