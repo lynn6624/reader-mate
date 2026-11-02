@@ -21,7 +21,7 @@ def run():
     with tempfile.TemporaryDirectory() as directory:
         core = Path(directory) / 'core'
         core.mkdir()
-        for name in ('reader_server.py', 'member_store.py', 'book_drafts.py', 'revision_proposals.py',
+        for name in ('reader_server.py','publication_store.py','publication_mapping.py','publication_plan.py','publication_service.py', 'member_store.py', 'book_drafts.py', 'revision_proposals.py',
                      'navigation.py', 'chapter_index.py', 'progress_catalog.py'):
             shutil.copy(ROOT / name, core / name)
         shutil.copytree(ROOT / 'web', core / 'web')
@@ -81,15 +81,15 @@ def run():
                             page.wait_for_timeout(1600)
                             stable = progress.read_bytes(); position = page.evaluate('view.scrollTop')
                             page.locator('#btnLib').click(); page.locator('#btnReview').click()
-                            page.locator('.rm-review-card').first.wait_for()
+                            page.locator('#reviewDialog .rm-review-card').first.wait_for()
                             assert not page.locator('#libPanel').evaluate('(el)=>el.classList.contains("on")')
                             # Reproduce the original PageDown on the initially focused Close button.
                             page.keyboard.press('PageDown'); page.wait_for_timeout(400)
-                            assert page.locator('.rm-review-body').evaluate('(el)=>el.scrollTop') > 0, 'modal cannot scroll'
-                            page.locator('.rm-review-body').evaluate('(el)=>{el.tabIndex=0;el.focus()}')
+                            assert page.locator('#reviewDialog .rm-review-body').evaluate('(el)=>el.scrollTop') > 0, 'modal cannot scroll'
+                            page.locator('#reviewDialog .rm-review-body').evaluate('(el)=>{el.tabIndex=0;el.focus()}')
                             for key in ('PageDown', 'PageUp', 'Space', 'ArrowDown', 'ArrowUp', 'Home', 'j', 'k', '/'):
                                 page.keyboard.press(key)
-                            page.locator('.rm-review-body').evaluate('(el)=>el.removeAttribute("tabindex")')
+                            page.locator('#reviewDialog .rm-review-body').evaluate('(el)=>el.removeAttribute("tabindex")')
                             assert not page.locator('#searchPanel').evaluate('(el)=>el.classList.contains("on")')
                             # Tab and Shift+Tab must stay in the modal.
                             page.locator('#reviewClose').focus(); page.keyboard.press('Shift+Tab')
@@ -98,8 +98,8 @@ def run():
                             assert page.evaluate('document.activeElement.id==="reviewClose"')
                             # Text editing and native button activation still work.
                             page.locator('#reviewRefresh').focus(); page.keyboard.press('Space')
-                            page.wait_for_function('document.querySelectorAll(".rm-review-card").length===20 && document.getElementById("reviewMessage").textContent.includes("20")')
-                            page.locator('.rm-review-card').first.get_by_role('button', name='预览并审批').click()
+                            page.wait_for_function('document.querySelectorAll("#reviewDialog .rm-review-card").length===20 && document.getElementById("reviewMessage").textContent.includes("20")')
+                            page.locator('#reviewDialog .rm-review-card').first.get_by_role('button', name='预览并审批').click()
                             field = page.get_by_label('接受内容（可手动调整）').first
                             field.fill('手动 / j k'); field.press('End'); field.press('Space'); field.press('PageDown')
                             assert field.input_value() == '手动 / j k '

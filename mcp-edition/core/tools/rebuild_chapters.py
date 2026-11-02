@@ -215,7 +215,12 @@ def main():
     parser.add_argument('--rollback')
     parser.add_argument('--report')
     parser.add_argument('--export-index')
-    result = run(parser.parse_args())
+    args = parser.parse_args()
+    from publication_store import Store
+    # Also protect preview against a mixed snapshot; the existing offline
+    # requirement remains for apply/rollback.
+    with Store(args.root).barrier(exclusive=bool(args.apply or args.rollback)):
+        result = run(args)
     print(json.dumps({'applied':result.get('applied',False), 'changed':len(result.get('changes',[])),
                       'skipped':len(result.get('skipped',[])), 'already_current':result.get('already_current',False),
                       'rolled_back':result.get('rolled_back',False)}, ensure_ascii=True))

@@ -147,7 +147,7 @@ def browser(web, portal, human):
 async def integration(with_browser):
     with tempfile.TemporaryDirectory() as folder:
         base = Path(folder); core = base / 'core'; core.mkdir(); data = core / 'data'; data.mkdir(); (core / '书库').mkdir()
-        for filename in ('reader_server.py', 'member_store.py', 'book_drafts.py', 'revision_proposals.py',
+        for filename in ('reader_server.py','publication_store.py','publication_mapping.py','publication_plan.py','publication_service.py', 'member_store.py', 'book_drafts.py', 'revision_proposals.py',
                          'navigation.py', 'chapter_index.py', 'progress_catalog.py', 'mcp_server.py', 'MCP工具标准调用参考_只读.txt'):
             shutil.copy(ROOT / filename, core / filename)
         shutil.copytree(ROOT / 'web', core / 'web'); portal = base / 'token-mcp'; portal.mkdir()

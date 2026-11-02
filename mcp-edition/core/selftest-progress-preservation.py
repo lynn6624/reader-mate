@@ -220,7 +220,7 @@ def port():
 def integration():
     with tempfile.TemporaryDirectory() as folder:
         base = Path(folder)
-        for name in ('reader_server.py', 'member_store.py', 'book_drafts.py', 'navigation.py',
+        for name in ('reader_server.py','publication_store.py','publication_mapping.py','publication_plan.py','publication_service.py', 'member_store.py', 'book_drafts.py', 'navigation.py',
                      'chapter_index.py', 'progress_catalog.py'):
             shutil.copy(ROOT / name, base / name)
         shutil.copytree(ROOT / 'web', base / 'web')

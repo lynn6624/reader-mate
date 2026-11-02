@@ -26,6 +26,7 @@ async function freePort() {
 
 async function main() {
   fs.copyFileSync(path.join(root, 'book_drafts.py'), path.join(temp, 'book_drafts.py'));
+  for(const module of ['publication_store.py', 'publication_mapping.py', 'publication_plan.py', 'publication_service.py']) fs.copyFileSync(path.join(root,module),path.join(temp,module));
   fs.copyFileSync(path.join(root, 'member_store.py'), path.join(temp, 'member_store.py'));
   fs.copyFileSync(path.join(root, 'reader_server.py'), path.join(temp, 'reader_server.py'));
   fs.copyFileSync(path.join(root, 'chapter_index.py'), path.join(temp, 'chapter_index.py'));

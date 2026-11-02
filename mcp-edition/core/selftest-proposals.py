@@ -142,7 +142,7 @@ def browser(origin, rows):
                 page.goto(origin+'/?who_token=test-owner');page.wait_for_function('typeof state!=="undefined" && state.book')
                 name='ui-mobile.txt' if mobile else 'ui-desktop.txt'
                 page.evaluate('(name)=>openBook(name)',name);page.wait_for_function('(name)=>state.book?.name===name',arg=name)
-                page.locator('#btnLib').click();page.locator('#btnReview').click();page.locator('.rm-review-card').first.wait_for()
+                page.locator('#btnLib').click();page.locator('#btnReview').click();page.locator('#reviewDialog .rm-review-card').first.wait_for()
                 assert page.locator('#reviewBook').inner_text()=='书籍：'+name
                 assert page.locator('#reviewList img').count()==0
                 accepted_id,rejected_id=rows[name]
@@ -156,7 +156,7 @@ def browser(origin, rows):
                 page.wait_for_function('(id)=>!reviewBusy && !document.querySelector(`[data-proposal-id="${id}"]`)',arg=accepted_id)
                 card=page.locator('[data-proposal-id="'+rejected_id+'"]')
                 card.get_by_role('button',name='预览并审批').click();card.get_by_role('button',name='拒绝',exact=True).click()
-                page.wait_for_function('!reviewBusy && document.querySelectorAll(".rm-review-card").length===0')
+                page.wait_for_function('!reviewBusy && document.querySelectorAll("#reviewDialog .rm-review-card").length===0')
                 page.locator('#reviewStatus').select_option('accepted')
                 page.get_by_text('实际接受内容',exact=True).wait_for()
                 assert '管理员校正' in page.locator('#reviewList').inner_text()
@@ -176,7 +176,7 @@ def browser(origin, rows):
 async def integration(with_browser):
     with tempfile.TemporaryDirectory() as root:
         base=Path(root)
-        for filename in ('reader_server.py','member_store.py','book_drafts.py','revision_proposals.py',
+        for filename in ('reader_server.py','publication_store.py','publication_mapping.py','publication_plan.py','publication_service.py','member_store.py','book_drafts.py','revision_proposals.py',
                          'navigation.py','chapter_index.py','progress_catalog.py','mcp_server.py','MCP工具标准调用参考_只读.txt'):
             shutil.copy(ROOT/filename,base/filename)
         shutil.copytree(ROOT/'web',base/'web');(base/'data').mkdir();(base/'书库').mkdir()

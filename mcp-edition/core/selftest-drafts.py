@@ -63,7 +63,7 @@ def unit():
 def integration(browser=True):
     with tempfile.TemporaryDirectory() as directory:
         base=Path(directory)
-        for n in ('reader_server.py','member_store.py','book_drafts.py','chapter_index.py','progress_catalog.py','navigation.py'):shutil.copy(ROOT/n,base/n)
+        for n in ('reader_server.py','publication_store.py','publication_mapping.py','publication_plan.py','publication_service.py','member_store.py','book_drafts.py','chapter_index.py','progress_catalog.py','navigation.py'):shutil.copy(ROOT/n,base/n)
         shutil.copytree(ROOT/'web',base/'web');(base/'书库').mkdir();(base/'data').mkdir()
         for name in ('test.txt','ui-desktop.txt','ui-mobile.txt'):(base/'书库'/name).write_bytes(TEXT.replace('\n','\r\n').encode())
         (base/'书库'/'long.txt').write_text('甲😀长正文。\n'*30000,encoding='utf8')

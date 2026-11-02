@@ -9,6 +9,7 @@ function refreshDraftControls(){
   if(active)$('#draftBanner').firstChild.textContent='草稿预览 · 已保存第 '+state.book.draft_revision+' 版 · '+state.book.edit_count+' 次文字编辑 · '+(state.book.chapter_issues||[]).length+' 项章节待核对 ';
   if(active)document.body.style.setProperty('--draft-banner-h',$('#draftBanner').offsetHeight+'px');
   $('#btnKeepPosition').hidden=active || !state.temporaryView;
+  if(typeof refreshPublicationControls==='function')refreshPublicationControls();
   $('#btnSearch').disabled=active;
   for(const id of ['btnTts','btnTtsPlay','btnTtsResume'])$('#'+id).disabled=active;
 }
@@ -143,3 +144,11 @@ async function deleteChapter(item){
 }
 
 window.addEventListener("resize",()=>{if(state.book?.isDraft)refreshDraftControls();});
+
+async function publicationRefreshBook(name){
+  clearTimeout(saveTimer);saveTimer=null;navigationOpen=true;
+  window.getSelection().removeAllRanges();
+  notesCache.list=[];notesCache.name='';notesCache.revision='';invalidateIndex();
+  try{await openBook(name);setTemporaryView(true);}
+  finally{clearTimeout(saveTimer);saveTimer=null;navigationOpen=document.getElementById('publicationDialog')?.hidden===false;}
+}

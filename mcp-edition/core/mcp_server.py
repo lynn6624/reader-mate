@@ -129,8 +129,10 @@ async def read_book(name: str, ctx: Context, offset: int = 0, length: int = 3000
     return {"name": book["name"], "offset": offset, "next_offset": end // 2,
             "total_units": len(raw) // 2, "text": text,
             "book_revision": book["book_revision"], "by_who": book["by_who"],
+            "publication_generation": book.get("publication_generation", 0),
             "reminder": ("阅读进度不会随 read_book 自动保存。实际读完后请调用 "
-                         "update_progress(name, offset, expected_revision)；"
+                          "update_progress(name, offset, expected_revision, "
+                          f"book_revision=\"{book['book_revision']}\")；"
                          "完整读完本次 text 才可用 next_offset，否则传实际停下的位置。"
                          "expected_revision 建议先从 get_reading_progress 取得。")}
 
@@ -180,13 +182,19 @@ async def get_annotations(name: str, highlight_id: str, ctx: Context) -> dict:
         "name": name, "highlight_id": highlight_id}))
 
 @mcp.tool()
-async def add_highlight(name: str, start: int, end: int, text: str, ctx: Context) -> dict:
-    """Create a shared highlight using UTF-16 offsets and the exact quoted text."""
+async def add_highlight(name: str, start: int, end: int, text: str, ctx: Context,
+                        book_revision: str = "") -> dict:
+    """Create a shared highlight using UTF-16 offsets and the exact quoted text.
+
+    For a published book, pass book_revision from the read_book response that
+    supplied the quoted range. A fresh automatic read must not relabel old offsets.
+    """
     book = await api(ctx, "/api/book?" + urllib.parse.urlencode({"name": name}))
     raw = book["text"].encode("utf-16-le")
     if not 0 <= start < end <= len(raw) // 2 or raw[start*2:end*2].decode("utf-16-le") != text:
         raise ValueError("Quote and range must match the book")
-    return await api(ctx, "/api/notes/highlight", {"name": name, "start": start, "end": end, "text": text})
+    return await api(ctx, "/api/notes/highlight", {"name": name, "start": start, "end": end,
+        "text": text, "book_revision": book_revision})
 
 @mcp.tool()
 async def add_comment(name: str, highlight_id: str, text: str, ctx: Context) -> dict:
@@ -211,13 +219,17 @@ async def delete_highlight(name: str, highlight_id: str, ctx: Context) -> dict:
 
 @mcp.tool()
 async def update_progress(name: str, offset: int, ctx: Context,
-                          expected_revision: int = -1) -> dict:
+                          expected_revision: int = -1, book_revision: str = "") -> dict:
     """Save your UTF-16 position. Pass revision from get_reading_progress to reject stale writes.
 
     Legacy callers may omit expected_revision; then the tool reads the current
     revision immediately before writing. Explicit backward moves are allowed.
+    Published books require book_revision from the read_book response actually
+    read by the caller. Unpublished books retain the legacy version fallback.
     """
     book = await api(ctx, "/api/book?" + urllib.parse.urlencode({"name": name}))
+    if book.get("publication_generation", 0) > 0 and not book_revision:
+        raise ValueError("此书已发布新版，请重新调用 read_book 阅读当前正文，并传入返回的 book_revision 后保存进度")
     who, _ = credentials(ctx)
     raw = book["text"].encode("utf-16-le")
     units = len(raw) // 2
@@ -231,7 +243,7 @@ async def update_progress(name: str, offset: int, ctx: Context,
     return await api(ctx, "/api/progress", {"name": name, "offset": offset,
         "chars": units, "percent": offset / units if units else 0,
         "anchor": anchor, "tts_offset": prior.get("tts_offset", 0),
-        "book_revision": book["book_revision"], "expected_revision": expected_revision})
+        "book_revision": book_revision or book["book_revision"], "expected_revision": expected_revision})
 
 @mcp.tool()
 async def propose_edit(name: str, book_revision: str, operation: Literal['replace','delete','insert_before','insert_after'],
