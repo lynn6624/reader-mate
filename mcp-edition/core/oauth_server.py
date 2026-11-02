@@ -199,7 +199,8 @@ def create_server(config, lookup_subject):
     def generate_token(grant_type, client, user=None, scope=None, expires_in=None, include_refresh_token=True):
         value = dict(access_token=secret('rma_'), token_type='Bearer', expires_in=config.access_ttl,
                      scope=scope or SCOPE)
-        if include_refresh_token and 'offline_access' in value['scope'].split():
+        if (include_refresh_token and client.check_grant_type('refresh_token')
+                and getattr(g, 'refresh_consented', False)):
             value['refresh_token'] = secret('rmr_')
         return value
 
@@ -232,6 +233,9 @@ def create_server(config, lookup_subject):
 
         def authenticate_user(self, value):
             grant = store.active_grant(g.db, value.value['grant'])
+            # Older grants retain their original consent; a new policy cannot upgrade them.
+            g.refresh_consented = bool(grant and grant.get(
+                'refresh_consented', 'offline_access' in grant['scope'].split()))
             return grant['subject'] if grant and lookup_subject(grant['subject']) else None
 
     class RefreshGrant(grants.RefreshTokenGrant):
@@ -429,7 +433,8 @@ def create_server(config, lookup_subject):
                 grant_id = secret('grant_')
                 grant = dict(id=grant_id, subject=invitation['subject'], client_id=params['client_id'],
                     resource=config.resource, scope=params.get('scope', SCOPE), created=now(),
-                    expires=now()+config.refresh_ttl, revoked=0, invite_id=invitation['id'])
+                    expires=now()+config.refresh_ttl, revoked=0, invite_id=invitation['id'],
+                    refresh_consented=validated_grant.request.client.check_grant_type('refresh_token'))
                 store.put(g.db, 'grant', grant_id, grant)
                 response = issuer_response(server.create_authorization_response(
                     validated_grant.request, grant_user=grant_id, grant=validated_grant))
@@ -451,7 +456,8 @@ def create_server(config, lookup_subject):
         subject = invitation['subject'] if invitation else ''
         response = make_response(render_template_string(PAGE, csrf=csrf, subject=subject,
             nickname=lookup_subject(subject) if subject else '', redirect=params['redirect_uri'],
-            client=params['client_id'], style=STYLE, offline='offline_access' in params.get('scope', '').split()))
+            client=params['client_id'], style=STYLE,
+            offline=validated_grant.request.client.check_grant_type('refresh_token')))
         response.set_cookie(COOKIE, cookie, max_age=600, secure=True, httponly=True, samesite='Lax', path='/')
         return response
 

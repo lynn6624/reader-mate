@@ -49,8 +49,9 @@ class Protocol(unittest.TestCase):
         return (client or self.client).open(path, base_url=ISSUER, **kwargs)
 
     def register(self, **metadata):
-        response = self.send('/oauth/register', method='POST', json=dict(
-            redirect_uris=[CALLBACK], grant_types=['authorization_code', 'refresh_token'], **metadata))
+        body = dict(redirect_uris=[CALLBACK], grant_types=['authorization_code', 'refresh_token'])
+        body.update(metadata)
+        response = self.send('/oauth/register', method='POST', json=body)
         self.assertEqual(response.status_code, 201)
         return response.json['client_id']
 
@@ -198,7 +199,7 @@ class Protocol(unittest.TestCase):
     def test_expiry_scope_and_revocation_endpoint(self):
         first, _ = self.issued()
         second, _ = self.issued(scope='reader:mcp')
-        self.assertNotIn('refresh_token', second)
+        self.assertIn('refresh_token', second)
         self.assertIsNone(self.store.access(first['access_token'], 'https://wrong.example/mcp'))
         stranger = self.register()
         self.assertEqual(self.send('/oauth/revoke', method='POST', data=dict(client_id=stranger, token=first['access_token'])).status_code, 200)
@@ -211,6 +212,36 @@ class Protocol(unittest.TestCase):
             value = self.store.get(db, 'access', digest(second['access_token'])); value['expires'] = now()-1
             self.store.put(db, 'access', digest(second['access_token']), value)
         self.assertIsNone(self.store.access(second['access_token'], self.config.resource))
+
+    def test_refresh_consent_without_offline_scope_and_legacy_grants(self):
+        _, csrf = self.start(scope='reader:mcp')
+        _, invite = self.store.invite('004')
+        confirmation = self.send('/oauth/authorize', method='POST',
+            data=dict(csrf=csrf, action='verify', invite=invite))
+        self.assertIn('允许客户端在你离线时刷新本次授权', confirmation.text)
+        self.assertNotIn('offline_access', confirmation.text)
+        token, _ = self.issued(scope='reader:mcp')
+        self.assertEqual(token['scope'], 'reader:mcp')
+        rotated = self.refresh(token['refresh_token'])
+        self.assertEqual(rotated.status_code, 200)
+        self.assertEqual(rotated.json['scope'], 'reader:mcp')
+        self.assertNotEqual(token['refresh_token'], rotated.json['refresh_token'])
+        self.assertEqual(self.refresh(token['refresh_token']).status_code, 400)
+        self.assertIsNone(self.store.access(rotated.json['access_token'], self.config.resource))
+        # A grant created before this policy cannot silently gain refresh permission.
+        for scope, refresh_allowed in (('reader:mcp', False), ('reader:mcp offline_access', True)):
+            code, verifier, _ = self.authorization(scope=scope)
+            with self.store.transaction() as db:
+                record = self.store.get(db, 'code', digest(code))
+                grant = self.store.get(db, 'grant', record['grant'])
+                grant.pop('refresh_consented')
+                self.store.put(db, 'grant', grant['id'], grant)
+            response = self.exchange(code, verifier)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual('refresh_token' in response.json, refresh_allowed)
+        self.client_id = self.register(grant_types=['authorization_code'])
+        token, _ = self.issued(scope='reader:mcp')
+        self.assertNotIn('refresh_token', token)
 
     def test_atomic_code_and_invitation_consumption(self):
         code, verifier, _ = self.authorization()

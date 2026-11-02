@@ -121,8 +121,9 @@ def exercise(spec, root, endpoint, verify, browser_args, screenshots, report, in
                     require(registration.status_code==201, 'DCR_browser')
                     cid = registration.json()['client_id']
                     verifier, state = secrets.token_urlsafe(48), secrets.token_urlsafe(24)
+                    scope = 'reader:mcp' if label == 'desktop' else 'reader:mcp offline_access'
                     params = dict(client_id=cid,response_type='code',redirect_uri=callback,
-                        resource=spec['resource'],scope='reader:mcp offline_access',state=state,
+                        resource=spec['resource'],scope=scope,state=state,
                         code_challenge=create_s256_code_challenge(verifier),code_challenge_method='S256')
                     invitation = store.invite(subject, ttl=3600)[1] if store else invitations[subject]
                     all_secrets.append(invitation)
@@ -145,6 +146,7 @@ def exercise(spec, root, endpoint, verify, browser_args, screenshots, report, in
                     page.locator('button[value=approve]').wait_for()
                     body = page.locator('body').inner_text()
                     require(subject in body and not any(value in body for value in all_secrets), 'confirmation_identity_'+label)
+                    require('允许客户端在你离线时刷新本次授权' in body, 'explicit_refresh_notice_'+label)
                     screenshots.mkdir(parents=True, exist_ok=True)
                     page.screenshot(path=str(screenshots/(label+'-confirm.png')), full_page=True)
                     report[label+'_secure_cookie'] = True
@@ -163,6 +165,9 @@ def exercise(spec, root, endpoint, verify, browser_args, screenshots, report, in
                         resource=spec['resource']))
                     require(token_response.status_code==200, 'browser_token_exchange_'+label)
                     token = token_response.json()
+                    require(token['scope']==scope and 'refresh_token' in token, 'refresh_scope_not_expanded_'+label)
+                    if label == 'desktop':
+                        report['refresh_without_offline_scope_after_consent'] = True
                     all_secrets.extend([token['access_token'], token['refresh_token']])
                     auth_headers = {'Host':host,'Authorization':'Bearer '+token['access_token']}
                     run_mcp(endpoint+'/mcp', auth_headers, verify, subject, True)

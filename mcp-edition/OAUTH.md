@@ -27,7 +27,7 @@ MCP 与 AS 角色在同一进程，不增加独立 IdP 服务。浏览器采用�
 | `POST /oauth/revoke` | form `client_id`、`token`；仅撤销该客户端持有 Token 的授权家族，未知 Token 返回 200 |
 | `/mcp` | 每次 HTTP 请求校验有效期、授权、资源、scope 和当前身份；匿名 401 带发现地址，scope 不足 403 |
 
-支持 `reader:mcp`，权限上限等于该读者原有 MCP 权限；`offline_access` 只在 AS 广告。客户端必须注册 `refresh_token` grant，并请求 offline_access 才会收到刷新 Token。刷新不扩大 scope、不改变身份/资源，授权家族最长 30 天；Access Token 默认 15 分钟，授权码 60 秒。
+支持 `reader:mcp`，权限上限等于该读者原有 MCP 权限；`offline_access` 只在 AS 广告。客户端须注册 `refresh_token` grant，授权页明确说明离线刷新及最长寿命，确认时记录刷新同意；无须额外请求 offline_access，业务 scope 也不因此扩大。旧授权按原同意处理，原来没有刷新资格的授权须重新确认。刷新不改变身份/资源，授权家族最长 30 天；Access Token 默认 15 分钟，授权码 60 秒。
 
 授权码、邀请和刷新消费均为 SQLite `BEGIN IMMEDIATE` 事务。授权码重放与旧刷新 Token 重放拒绝并撤销原授权家族，包括新 Token。并发重试也按重放处理，客户端应串行刷新；若网络丢失刷新响应，应重新授权。授权码交换失败不会提前消费邀请码以外的其他读者状态。
 

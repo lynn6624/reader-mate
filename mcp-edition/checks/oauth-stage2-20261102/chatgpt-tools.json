@@ -1,0 +1,14 @@
+{
+  "client": "ChatGPT, operated by user",
+  "confirmed_at_utc": "2026-11-02T16:41:28Z",
+  "production_access": false,
+  "reader_id": "004",
+  "scope": "reader:mcp",
+  "authorization_code_exchanged_server_observed": true,
+  "access_token_issued_server_observed": true,
+  "user_reported_every_tool_exercised_successfully": true,
+  "per_tool_server_trace_collected": false,
+  "refresh_tokens_issued_before_compatibility_fix": 0,
+  "actual_client_refresh_after_fix": "pending reauthorization",
+  "actual_client_revocation": "pending"
+}
