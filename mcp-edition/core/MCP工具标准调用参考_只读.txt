@@ -6,7 +6,7 @@
 
 1. list_books({})
    从 books 里选一本，记下准确的 name。
-   返回还含 categories（六类的 id、名称、书籍数）。按分类读取目录用 list_books({"category":"literature"})；省略 category 保持返回全部书籍。有效分类 ID：literature＝文学小说，web-fiction＝网络文学，nonfiction＝随笔与纪实，science-tools＝科普与工具，humanities＝人文社科，uncategorized＝待分类。人文社科用于哲学、心理学、社会学、性别研究、传播学、思想史等理论及研究著作，可调用 list_books({"category":"humanities"}) 查看目录。nonfiction 仅更名，原分类 ID 和用户已设置的分类保留，不会自动移动书籍。分类仅为书籍元数据，不改变文件名、原文偏移或权限；普通共读身份只能浏览分类。
+   返回还含 categories（七类的 id、名称、书籍数）。按分类读取目录用 list_books({"category":"literature"})；省略 category 保持返回全部书籍。有效分类 ID：literature＝文学小说，web-fiction＝网络文学，nonfiction＝随笔与纪实，science-tools＝科普与工具，humanities＝人文社科，relay＝接龙，uncategorized＝待分类。人文社科用于哲学、心理学、社会学、性别研究、传播学、思想史等理论及研究著作，可调用 list_books({"category":"humanities"}) 查看目录。nonfiction 仅更名，原分类 ID 和用户已设置的分类保留，不会自动移动书籍。分类仅为书籍元数据，不改变文件名、原文偏移或权限；普通共读身份只能浏览分类。
 
 2. get_reading_progress({"name":"实际文件名.txt"})
    默认读取当前令牌对应身份自己的进度。返回的 revision 是保存时要带的 expected_revision；没有记录时 revision 为 0，offset 从 0 开始。若 progress.location_status 表示正文变化或位置不能可靠核对，先重新查看正文，不要盲用旧 offset。
@@ -53,3 +53,5 @@ MCP 连接由服务器验证身份令牌或已配置的专用 URL。工具写入
 5. 管理员在阅读器打开本书，点击“修订审批”，预览、手动调整后接受或拒绝。accepted仅表示已写入共享草稿，正式TXT仍为原版；rejected不改变草稿。冲突建议不能强行套用，应重新核对后提交。原文版本改变后，不能把旧建议当成新版建议继续应用。
 
 只建议明确广告、水印、乱码、错字、异常重复和章节问题。专名、译名、特殊措辞及存疑标点只说明疑点，由人类判断；不补写、改写或删减情节。普通批注和修订建议分开保存。审批与发布不是同一操作；只有管理员在前端校验影响并明确确认后，才将整份共享草稿发布成正式TXT。引用被删除、替换或无法可靠迁移时整次拒绝，原文和共读记录保留。发布、回滚及历史清理没有面向Agent的MCP工具。
+
+接龙分类：list_books({"category":"relay"})。管理员可在上传和书卡中选择「接龙」，只修改分类元数据，不自动移动既有书籍。

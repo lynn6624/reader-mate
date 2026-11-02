@@ -102,8 +102,8 @@ async def get_calling_guide(ctx: Context) -> dict:
 
 @mcp.tool()
 async def list_books(ctx: Context, category: Literal["", "literature", "web-fiction", "nonfiction",
-                                                    "science-tools", "humanities", "uncategorized"] = "") -> dict:
-    """List shared books and six categories/counts. Omit category for all; pass a returned category ID to filter.
+                                                    "science-tools", "humanities", "relay", "uncategorized"] = "") -> dict:
+    """List shared books and seven categories/counts. Omit category for all; pass a returned category ID to filter.
 
     Call get_calling_guide first if the workflow is unfamiliar. Category IDs never change book names/positions.
     Progress belongs to authenticated viewer_id (scope=self); unverified/missing saves use null, never another reader.

@@ -51,6 +51,7 @@ BOOK_CATEGORIES = (
     ("nonfiction", "随笔与纪实"),
     ("science-tools", "科普与工具"),
     ("humanities", "人文社科"),
+    ("relay", "接龙"),
     ("uncategorized", "待分类"),
 )
 CATEGORY_IDS = frozenset(key for key, _ in BOOK_CATEGORIES)

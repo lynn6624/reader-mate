@@ -101,9 +101,12 @@ async def run():
                             guide = await call('get_calling_guide', {})
                             assert guide['name'] == guide_name and 'update_progress' in guide['text']
                             listing = await call('list_books', {})
-                            assert len(listing['books']) == 2 and len(listing['categories']) == 6
+                            assert len(listing['books']) == 2 and len(listing['categories']) == 7
                             list_schema = next(t.inputSchema for t in tools.tools if t.name == 'list_books')
                             assert 'humanities' in list_schema['properties']['category']['enum']
+                            assert 'relay' in list_schema['properties']['category']['enum']
+                            relay = await call('list_books', {'category':'relay'})
+                            assert relay['books'] == [] and any(c['id']=='relay' and c['name']=='接龙' for c in relay['categories'])
                             filtered = await call('list_books', {'category':'humanities'})
                             assert [book['name'] for book in filtered['books']] == [guide_name]
                             invalid = await session.call_tool('list_books', {'category':'invented'})
