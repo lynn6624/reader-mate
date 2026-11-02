@@ -16,7 +16,7 @@ def port():
 async def run():
     with tempfile.TemporaryDirectory() as d:
         base = pathlib.Path(d)
-        for filename in ('reader_server.py', 'member_store.py','book_drafts.py', 'mcp_server.py', 'chapter_index.py', 'progress_catalog.py', 'navigation.py'):
+        for filename in ('reader_server.py','publication_store.py','publication_mapping.py','publication_plan.py','publication_service.py', 'member_store.py','book_drafts.py', 'mcp_server.py', 'chapter_index.py', 'progress_catalog.py', 'navigation.py'):
             shutil.copy(ROOT / filename, base / filename)
         guide_name = 'MCP工具标准调用参考_只读.txt'
         shutil.copy(ROOT / guide_name, base / guide_name)
@@ -101,9 +101,12 @@ async def run():
                             guide = await call('get_calling_guide', {})
                             assert guide['name'] == guide_name and 'update_progress' in guide['text']
                             listing = await call('list_books', {})
-                            assert len(listing['books']) == 2 and len(listing['categories']) == 6
+                            assert len(listing['books']) == 2 and len(listing['categories']) == 7
                             list_schema = next(t.inputSchema for t in tools.tools if t.name == 'list_books')
                             assert 'humanities' in list_schema['properties']['category']['enum']
+                            assert 'relay' in list_schema['properties']['category']['enum']
+                            relay = await call('list_books', {'category':'relay'})
+                            assert relay['books'] == [] and any(c['id']=='relay' and c['name']=='接龙' for c in relay['categories'])
                             filtered = await call('list_books', {'category':'humanities'})
                             assert [book['name'] for book in filtered['books']] == [guide_name]
                             invalid = await session.call_tool('list_books', {'category':'invented'})

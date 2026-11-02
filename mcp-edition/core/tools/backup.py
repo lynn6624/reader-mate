@@ -569,7 +569,19 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)
+    if args.cmd == 'info':
+        return args.func(args)
+    # All cooperating processes use this same cross-process data barrier.
+    root = project_root()
+    sys.path.insert(0, root)
+    from publication_store import Store
+    store = Store(root)
+    with store.barrier(exclusive=args.cmd == 'import'):
+        if args.cmd == 'import' and not args.dry_run and any(
+                'current.json' in files
+                for _, _, files in os.walk(os.path.join(data_dir(root), 'publications'))):
+            raise ValueError('此书库已有正式发布记录；旧版部分导入不能恢复发布状态。请停 Web/MCP 后使用完整冷备份恢复。')
+        return args.func(args)
 
 
 if __name__ == "__main__":

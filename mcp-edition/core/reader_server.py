@@ -34,10 +34,13 @@ from datetime import datetime
 from email.utils import formatdate
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from html import escape as html_escape
+from functools import wraps
 from http.cookies import SimpleCookie
 from progress_catalog import TIME_ZONE, time_key, verified_position
 from chapter_index import (INDEX_VERSION as CHAPTER_INDEX_VERSION,
                            index_for_text, chapter_at as indexed_chapter_at, public_index)
+from publication_store import Store as PublicationStore, PublicationError
+from publication_service import Controller as PublicationController, RequestError as PublicationRequestError
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 BOOKS_DIR = os.path.join(BASE, "书库")
@@ -48,6 +51,7 @@ BOOK_CATEGORIES = (
     ("nonfiction", "随笔与纪实"),
     ("science-tools", "科普与工具"),
     ("humanities", "人文社科"),
+    ("relay", "接龙"),
     ("uncategorized", "待分类"),
 )
 CATEGORY_IDS = frozenset(key for key, _ in BOOK_CATEGORIES)
@@ -78,6 +82,54 @@ CLOUD = os.environ.get("READER_CLOUD", "0") == "1"
 
 _lock = threading.Lock()
 _conversion_lock = threading.Lock()
+_publication_instance = None
+
+
+def publication_store():
+    global _publication_instance
+    core = os.path.realpath(BASE)
+    if _publication_instance is None or str(_publication_instance.core) != core:
+        _publication_instance = PublicationStore(core)
+    return _publication_instance
+
+
+def publication_request(function):
+    """Read bounded request bodies before excluding publication snapshots."""
+    @wraps(function)
+    def guarded(self, *args, **kwargs):
+        path = urllib.parse.urlparse(self.path).path
+        # A slow upload must not hold a shared lock and starve publication.
+        # The cached bytes belong to this request, never the keep-alive socket.
+        self._request_body = None
+        import_slot = False
+        try:
+            if self.command == 'POST':
+                if path.startswith('/api/') and not self._require_token():
+                    return
+                if path == '/api/import':
+                    # Reject a second upload before its body or the Windows
+                    # exclusive data lock can queue behind a conversion.
+                    import_slot = _conversion_lock.acquire(blocking=False)
+                    if not import_slot:
+                        return self._err('已有书籍正在导入，请稍后重试', 409)
+                    self._import_slot = True
+                self._request_body = self._body()
+            with publication_store().barrier(exclusive=path.startswith('/api/publication/')):
+                return function(self, *args, **kwargs)
+        except TimeoutError:
+            self.close_connection = True
+            return self._err('请求传输超时，请重试', 408)
+        except PublicationRequestError as exc:
+            return self._json(dict(ok=False, error=str(exc), **exc.detail), exc.status)
+        except PublicationError as exc:
+            return self._err('发布保护：' + str(exc), exc.status)
+        except ValueError as exc:
+            return self._err(str(exc), 400)
+        finally:
+            if import_slot:
+                self._import_slot = False
+                _conversion_lock.release()
+    return guarded
 
 
 # ---------------------------------------------------------------- 基础工具
@@ -933,6 +985,11 @@ def _notes_digest(raw):
     return hashlib.sha256(raw).hexdigest() if raw is not None else None
 
 
+def notes_cache_revision(notes):
+    epoch=notes.get('publication_revision')
+    return (str(notes.get('updated') or '')+'#'+str(epoch)) if epoch else notes.get('updated')
+
+
 def load_notes() -> dict:
     """Lossless historical view. Corruption blocks writes instead of becoming empty."""
     raw = _notes_raw()
@@ -1233,6 +1290,7 @@ else:
 class Handler(KindleMixin, BaseHTTPRequestHandler):
     server_version = "ReaderMate/1.0"
     protocol_version = "HTTP/1.1"
+    timeout = 30  # Bound idle reads and slow response writes, including lock holders.
 
     def log_message(self, *a):
         pass
@@ -1266,12 +1324,36 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         return urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
 
     def _body(self):
+        cached = getattr(self, '_request_body', None)
+        if cached is not None:
+            return cached
+        if self.headers.get('Transfer-Encoding'):
+            raise ValueError('不支持分块请求正文，请提供 Content-Length')
         n = int(self.headers.get("Content-Length") or 0)
         if n <= 0:
             return b""
         if n > MAX_BODY:
             raise ValueError("文件太大（上限 %d MB）" % (MAX_BODY // 1024 // 1024))
-        return self.rfile.read(n)
+        if urllib.parse.urlparse(self.path).path.startswith('/api/publication/') and n > 64 * 1024:
+            raise ValueError('发布请求上限64KB')
+        # A deadline, rather than per-recv timeouts, also bounds a slow drip.
+        deadline = time.monotonic() + (60 if n > 1024 * 1024 else 10)
+        previous_timeout = self.connection.gettimeout()
+        chunks, remaining = [], n
+        try:
+            while remaining:
+                available = deadline - time.monotonic()
+                if available <= 0:
+                    raise TimeoutError('request body deadline exceeded')
+                self.connection.settimeout(available)
+                chunk = self.rfile.read1(min(remaining, 256 * 1024))
+                if not chunk:
+                    raise ValueError('请求正文不完整，请重试')
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            return b''.join(chunks)
+        finally:
+            self.connection.settimeout(previous_timeout)
 
     # ---- 鉴权 ----
     def _token_ok(self):
@@ -1343,6 +1425,7 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         self.end_headers()
 
     # ---- GET ----
+    @publication_request
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
         try:
@@ -1384,6 +1467,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                 return
             if path == "/api/books":
                 return self._api_books()
+            if path.startswith('/api/publication/'):
+                return self._api_publication()
             if KINDLE_INSTALLED and path == "/api/kindle/sessions":
                 return self._api_kindle_sessions()
             if path == "/api/book":
@@ -1500,6 +1585,10 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             try:
                 with open(os.path.join(BASE,'web','review.js'),'rb') as f:body=body.replace(b'/* REVISION_REVIEW_JS */',f.read())
             except OSError:return self._err('找不到审批界面脚本 web/review.js',500)
+        if b'/* PUBLICATION_JS */' in body:
+            try:
+                with open(os.path.join(BASE,'web','publication.js'),'rb') as f:body=body.replace(b'/* PUBLICATION_JS */',f.read())
+            except OSError:return self._err('找不到发布界面脚本 web/publication.js',500)
         if KINDLE_INSTALLED:
             body = kindle_extension.decorate_page(body)
         if self._kindle_cookie_only():
@@ -1651,6 +1740,7 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                 window = dict(text_base=0,total_units=total,windowed=False)
         return self._json({"ok": True, "name": name, "text": text,
                            "book_revision": book_revision,
+                           "publication_generation": (publication_store().current(name) or {}).get('generation',0),
                            "chars": len(text), "progress": prog,
                            "by_who": by_who,
                            "chapter_index": structure, **window})
@@ -2013,6 +2103,7 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                                        for rid in active + empty]})
 
     # ---- POST ----
+    @publication_request
     def do_DELETE(self):
         path = urllib.parse.urlparse(self.path).path
         try:
@@ -2030,6 +2121,7 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         except Exception as e:
             return self._err("服务端出错：%s" % e, 500)
 
+    @publication_request
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
         try:
@@ -2042,6 +2134,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                 return
             if not self._kindle_write_origin_ok():
                 return self._err("来源不允许", 403)
+            if path.startswith('/api/publication/'):
+                return self._api_publication()
             if KINDLE_INSTALLED and path == "/api/kindle/pairings":
                 return self._api_kindle_pairing()
             if path == "/api/import":
@@ -2073,11 +2167,44 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
             return self._err("服务端出错：%s" % e, 500)
 
     def _api_import(self):
+        if getattr(self, '_import_slot', False):
+            return self._api_import_single()
         if not _conversion_lock.acquire(blocking=False):
             self.close_connection=True
             return self._err('已有书籍正在导入，请稍后重试',409)
         try:return self._api_import_single()
         finally:_conversion_lock.release()
+
+    def _api_publication(self):
+        if self._kindle_cookie_only() or resolve_who(None,self._who_token()) != 'user':
+            return self._err('校验发布、回滚和清理仅限管理员',403)
+        from publication_store import ValidationError, ConflictError
+        route=urllib.parse.urlparse(self.path).path.rsplit('/',1)[-1]
+        controller=PublicationController(sys.modules[__name__],publication_store())
+        try:
+            if self.command=='GET':
+                if route!='history':return self._err('没有这个路径',404)
+                name=(self._query().get('name') or [''])[0]
+                result=controller.history(name)
+            else:
+                if int(self.headers.get('Content-Length') or 0)>64*1024:
+                    self.close_connection=True
+                    return self._err('发布请求上限64KB',413)
+                data=json.loads(self._body().decode('utf-8'))
+                if not isinstance(data,dict):return self._err('发布请求必须为对象',400)
+                name=data.get('name')
+                if route=='preview':result=controller.preview(name)
+                elif route=='commit':result=controller.commit(name,data.get('preview_digest'),data.get('request_id'))
+                elif route=='rollback-preview':result=controller.rollback_preview(name,data.get('publication_id'))
+                elif route=='rollback':result=controller.rollback(name,data.get('publication_id'),data.get('preview_digest'),data.get('request_id'))
+                elif route=='cleanup-preview':result=controller.cleanup_preview(name,data.get('publication_ids'))
+                elif route=='cleanup':result=controller.cleanup(name,data.get('publication_ids'),data.get('confirm_digest'))
+                else:return self._err('没有这个路径',404)
+            return self._json(dict(result,ok=True))
+        except PublicationRequestError as exc:
+            return self._json(dict(ok=False,error=str(exc),**exc.detail),exc.status)
+        except PublicationError as exc:return self._err(str(exc),exc.status)
+        except (TypeError,ValueError,UnicodeError):return self._err('发布参数无效',400)
 
     def _api_import_single(self):
         if self._kindle_cookie_only():
@@ -2306,9 +2433,11 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         if name:
             if not os.path.isfile(book_path(name)):
                 return self._err("书库里没有这本书", 404)
-            if (q.get("since") or [""])[0] == nt.get("updated"):
+            book_revision=file_revision(book_path(name))
+            cache_revision=notes_cache_revision(nt)
+            if (q.get("since") or [""])[0] == cache_revision:
                 return self._json({"ok": True, "name": name, "viewer_id": viewer,
-                                   "revision": nt["updated"], "not_modified": True})
+                                   "revision": cache_revision,"book_revision":book_revision, "not_modified": True})
             book = (nt.get("books") or {}).get(name) or {"highlights": []}
             highlights = [_norm_highlight(h) for h in (book.get("highlights") or [])]
             chapter = (q.get("chapter_id") or [""])[0]
@@ -2331,7 +2460,7 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
                 h["book_id"] = name
                 h["location_status"] = _note_location(h, book_text, current_hash)
             return self._json({"ok": True, "name": name, "viewer_id": viewer,
-                               "revision": nt.get("updated"), "highlights": highlights, "total": total,
+                               "revision": cache_revision,"book_revision":book_revision, "highlights": highlights, "total": total,
                                "next_offset": offset + len(highlights) if offset + len(highlights) < total else None})
         books = {}
         for n, b in (nt.get("books") or {}).items():
@@ -2364,6 +2493,12 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
         if not os.path.isfile(book_path(name)):
             return self._err("书库里没有这本书", 404)
         # offset 合法性
+        supplied_revision=data.get('book_revision')
+        published=(publication_store().current(name) or {}).get('generation',0)>0
+        if published and not supplied_revision:
+            return self._err('该书已发布新版，请重新读取并提交book_revision',428)
+        if supplied_revision and (not isinstance(supplied_revision,str) or supplied_revision!=file_revision(book_path(name))):
+            return self._err('正文版本已变化，请重新读取后划线',409)
         try:
             start = max(0, int(data.get("start") or 0))
         except Exception:
@@ -2774,6 +2909,8 @@ class Handler(KindleMixin, BaseHTTPRequestHandler):
 def main():
     os.makedirs(BOOKS_DIR, exist_ok=True)
     os.makedirs(DATA_DIR, exist_ok=True)
+    # Recover before initializing any defaults or accepting HTTP/MCP data requests.
+    publication_store().recover()
     with _progress_guard():
         if not os.path.exists(PROGRESS_FILE):
             _progress_atomic(PROGRESS_FILE, json.dumps(

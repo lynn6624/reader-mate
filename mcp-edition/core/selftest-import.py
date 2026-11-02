@@ -47,6 +47,7 @@ def main():
     with tempfile.TemporaryDirectory() as temp:
         base = pathlib.Path(temp)
         shutil.copy(ROOT / "book_drafts.py", base)
+        for module in ('publication_store.py', 'publication_mapping.py', 'publication_plan.py', 'publication_service.py'): shutil.copy(ROOT/module,base/module)
         shutil.copy(ROOT / "member_store.py", base)
         shutil.copy(ROOT / "reader_server.py", base)
         shutil.copy(ROOT / "chapter_index.py", base)

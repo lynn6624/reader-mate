@@ -2305,6 +2305,7 @@ $("#btnTheme").addEventListener("click", () => {
 document.addEventListener("keydown", e => {
   // The review dialog owns its keyboard, even if focus was moved outside it.
   if (document.getElementById('reviewDialog')?.hidden === false) return;
+  if (document.getElementById('publicationDialog')?.hidden === false) return;
   const tag = (e.target.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea"){
     if (e.key === "Escape") closePanels();
@@ -2487,7 +2488,7 @@ async function doHighlight(kind){
   const style = "line";
   const body = {
     name: state.book.name, start: info.start, end: info.end,
-    text: info.text.slice(0, 4000), style, chapter
+    text: info.text.slice(0, 4000), style, chapter, book_revision: state.book.book_revision
   };
   window.getSelection().removeAllRanges();
   try {
@@ -2597,8 +2598,10 @@ function unwrapGroup(groupId){
 async function loadHighlights(name){
   if(state.book?.isDraft)return;
   if (!name){ notesCache.list = []; return; }
-  if (notesCache.name !== name){
+  const observedBook=state.book,observedRevision=observedBook.book_revision;
+  if (notesCache.name !== name || notesCache.bookRevision !== observedRevision){
     notesCache.name = name;
+    notesCache.bookRevision = observedRevision;
     notesCache.list = [];
     notesCache.revision = "";
   }
@@ -2616,6 +2619,15 @@ async function loadHighlights(name){
         return;
       }
       j = await r.json();
+      if(state.book!==observedBook)return;
+      if(j.book_revision && j.book_revision!==observedRevision){
+        saveBlocked=true;setTemporaryView(true);notesCache.revision='';notesCache.list=[];
+        if(document.getElementById('publicationDialog')?.hidden!==false){
+          await publicationRefreshBook(name);
+          toast('正文已更新，已重新读取；请核对续读位置',6000);
+        }
+        return;
+      }
       if (j.not_modified){
         if (state.viewerId === j.viewer_id) return;
         notesCache.revision = "";
@@ -2627,7 +2639,7 @@ async function loadHighlights(name){
       offset = j.next_offset;
     } while (offset !== null && offset !== undefined);
     // 拉回时用户可能已经切到别的书——只接受当前书的
-    if (!state.book || state.book.isDraft || state.book.name !== name){ return; }
+    if (!state.book || state.book.isDraft || state.book!==observedBook){ return; }
     const notesError = document.getElementById("errbar");
     if (notesError && notesError.dataset.kind === "notes") notesError.remove();
     if (consistent && firstRevision && notesCache.revision === firstRevision &&
@@ -3456,6 +3468,7 @@ async function startReaderGate(){
 
 /* DRAFT_EDITOR_JS */
 /* REVISION_REVIEW_JS */
+/* PUBLICATION_JS */
 startReaderGate();
 </script>
 </body>

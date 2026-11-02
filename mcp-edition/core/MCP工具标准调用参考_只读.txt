@@ -6,7 +6,7 @@
 
 1. list_books({})
    从 books 里选一本，记下准确的 name。
-   返回还含 categories（六类的 id、名称、书籍数）。按分类读取目录用 list_books({"category":"literature"})；省略 category 保持返回全部书籍。有效分类 ID：literature＝文学小说，web-fiction＝网络文学，nonfiction＝随笔与纪实，science-tools＝科普与工具，humanities＝人文社科，uncategorized＝待分类。人文社科用于哲学、心理学、社会学、性别研究、传播学、思想史等理论及研究著作，可调用 list_books({"category":"humanities"}) 查看目录。nonfiction 仅更名，原分类 ID 和用户已设置的分类保留，不会自动移动书籍。分类仅为书籍元数据，不改变文件名、原文偏移或权限；普通共读身份只能浏览分类。
+   返回还含 categories（七类的 id、名称、书籍数）。按分类读取目录用 list_books({"category":"literature"})；省略 category 保持返回全部书籍。有效分类 ID：literature＝文学小说，web-fiction＝网络文学，nonfiction＝随笔与纪实，science-tools＝科普与工具，humanities＝人文社科，relay＝接龙，uncategorized＝待分类。人文社科用于哲学、心理学、社会学、性别研究、传播学、思想史等理论及研究著作，可调用 list_books({"category":"humanities"}) 查看目录。nonfiction 仅更名，原分类 ID 和用户已设置的分类保留，不会自动移动书籍。分类仅为书籍元数据，不改变文件名、原文偏移或权限；普通共读身份只能浏览分类。
 
 2. get_reading_progress({"name":"实际文件名.txt"})
    默认读取当前令牌对应身份自己的进度。返回的 revision 是保存时要带的 expected_revision；没有记录时 revision 为 0，offset 从 0 开始。若 progress.location_status 表示正文变化或位置不能可靠核对，先重新查看正文，不要盲用旧 offset。
@@ -14,8 +14,9 @@
 3. read_book({"name":"实际文件名.txt","offset":起读位置,"length":3000})
    length 可为 1—12000，默认 3000。返回 text、next_offset、total_units、book_revision 等。offset、length、next_offset 均按 UTF-16 单位计算，emoji 可能占两个单位；翻页请直接使用返回的 next_offset，不要用字符数自行相加。read_book 只读取，不保存阅读进度。
 
-4. 实际读完一段后，调用 update_progress({"name":"实际文件名.txt","offset":实际读到的位置,"expected_revision":刚取得的 revision})。
+4. 实际读完一段后，调用 update_progress({"name":"实际文件名.txt","offset":实际读到的位置,"expected_revision":刚取得的 revision,"book_revision":"第3步read_book返回的book_revision"})。
    如果完整读完第 3 步返回的 text，offset 可用该次的 next_offset；如果只读了一部分，就使用真实停下的位置。成功返回新的 revision，下一次保存要用新值。遇到进度冲突（409）先重新调用 get_reading_progress，核对他处的新位置，不要直接覆盖。
+   expected_revision 是该身份的进度修订号；book_revision 是实际阅读的正文版本，两者不能混用。已发布或回滚过的书必须传入匹配的 book_revision，不能用旧正文坐标写新版；省略或不匹配时重新读取再操作。未发布书仍兼容旧调用，建议所有调用都显式传版本。
 
 5. 继续阅读：read_book 的下一次 offset 使用上次 next_offset；完成阅读后再次明确调用 update_progress。不要把调用 read_book 当作已经保存。
 
@@ -31,7 +32,7 @@
 - get_highlights({"name":"实际文件名.txt","chapter_id":"正文中的章节名","offset":0,"limit":100})：读取一个章节的共读划线，默认所有有权限的身份。可选 author_id 仅用于筛选，分页依返回结果继续。
 - list_comments({"name":"实际文件名.txt","offset":0,"limit":200})：不知道章节名时，分页查这本书的旧版划线列表，从返回项识别 chapter_id。
 - get_annotations({"name":"实际文件名.txt","highlight_id":"返回的划线ID"})：读取某条划线下所有身份的批注。
-- add_highlight({"name":"实际文件名.txt","start":起点,"end":终点,"text":"与原书完全一致的原文"})：创建自己的划线。start/end 是 UTF-16 原文位置，必须与 text 精确匹配。
+- add_highlight({"name":"实际文件名.txt","start":起点,"end":终点,"text":"与原书完全一致的原文","book_revision":"read_book返回的book_revision"})：创建自己的划线。start/end 是 UTF-16 原文位置，必须与 text 精确匹配。已发布或回滚书缺少正文版本时拒写；不能猜版本或自动重试旧坐标。
 - add_comment({"name":"实际文件名.txt","highlight_id":"返回的划线ID","text":"批注内容"})：可在有权限查看的他人划线下评论。
 - delete_highlight({"name":"实际文件名.txt","highlight_id":"自己的划线ID"})：只能删除自己的划线；若有他人批注，服务端会拒绝，不能静默抹去对方内容。
 
@@ -51,4 +52,6 @@ MCP 连接由服务器验证身份令牌或已配置的专用 URL。工具写入
 4. list_proposals({"name":"实际文件名.txt","status":"pending","offset":0,"limit":20})查询本身份建议；status可为pending/accepted/rejected/conflict或空（全部），limit为1—50，后续页使用next_offset。相同身份的完全相同建议返回原ID。
 5. 管理员在阅读器打开本书，点击“修订审批”，预览、手动调整后接受或拒绝。accepted仅表示已写入共享草稿，正式TXT仍为原版；rejected不改变草稿。冲突建议不能强行套用，应重新核对后提交。原文版本改变后，不能把旧建议当成新版建议继续应用。
 
-只建议明确广告、水印、乱码、错字、异常重复和章节问题。专名、译名、特殊措辞及存疑标点只说明疑点，由人类判断；不补写、改写或删减情节。普通批注和修订建议分开保存。审批与发布不是同一操作，本阶段没有正式TXT发布功能。
+只建议明确广告、水印、乱码、错字、异常重复和章节问题。专名、译名、特殊措辞及存疑标点只说明疑点，由人类判断；不补写、改写或删减情节。普通批注和修订建议分开保存。审批与发布不是同一操作；只有管理员在前端校验影响并明确确认后，才将整份共享草稿发布成正式TXT。引用被删除、替换或无法可靠迁移时整次拒绝，原文和共读记录保留。发布、回滚及历史清理没有面向Agent的MCP工具。
+
+接龙分类：list_books({"category":"relay"})。管理员可在上传和书卡中选择「接龙」，只修改分类元数据，不自动移动既有书籍。
