@@ -176,6 +176,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)
 
@@ -250,6 +253,41 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/login":
             self._send(200, {"ok": self._password_ok(body)})
             return
+
+        if path.startswith("/api/oauth/"):
+            # Password is supplied explicitly in JSON, never in a cookie or URL.
+            if self.headers.get_content_type() != "application/json" or "?" in self.path:
+                return self._send(400, {"ok": False, "error": "需要 JSON 请求"})
+            try:
+                import oauth_management as oauth
+                if not oauth.configured():
+                    return self._send(404, {"ok": False, "error": "OAuth 管理尚未启用"})
+                if not oauth.allowed_origin(self.headers.get("Origin")):
+                    return self._send(403, {"ok": False, "error": "请求来源不允许"})
+                if not oauth.store().limited("admin", self.client_address[0], 60, 120):
+                    return self._send(429, {"ok": False, "error": "操作过于频繁，请稍后重试"})
+                if not self._password_ok(body):
+                    return self._send(403, {"ok": False, "error": "管理员口令不正确"})
+                if path == "/api/oauth/overview":
+                    return self._send(200, dict(ok=True, **oauth.overview(IDENTITIES, body.get("page", 0))))
+                if path == "/api/oauth/invite":
+                    return self._send(200, dict(ok=True, **oauth.invite(IDENTITIES, body)))
+                if path == "/api/oauth/revoke-grant":
+                    oauth.revoke("grant", body.get("grant_id"))
+                elif path == "/api/oauth/revoke-invite":
+                    oauth.revoke("invite", body.get("invite_id"))
+                else:
+                    return self._send(404, {"ok": False, "error": "没有这个端点"})
+                return self._send(200, {"ok": True})
+            except KeyError:
+                return self._send(404, {"ok": False, "error": "授权或邀请不存在"})
+            except (member_store.StoreError, OSError, ImportError):
+                return self._send(503, {"ok": False, "error": "OAuth 存储不可用，请检查服务配置"})
+            except ValueError as error:
+                # StoreError is also ValueError; do not echo supplied values or exception details.
+                unavailable = type(error).__name__ == "StoreError"
+                return self._send(503 if unavailable else 400, {"ok": False,
+                    "error": "OAuth 存储不可用" if unavailable else "读者或邀请码参数无效"})
 
         if path in ("/api/identities", "/api/members", "/api/members/list", "/api/members/rename", "/api/credentials/revoke"):
             if not self._password_ok(body):

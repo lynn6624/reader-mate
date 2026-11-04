@@ -22,7 +22,7 @@ def main():
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
-        env = dict(os.environ, READER_DATA_DIR=tmp, TOKEN_PORT=str(port),
+        env = dict(os.environ, READER_DATA_DIR=tmp, TOKEN_PORT=str(port), READER_OAUTH_MANAGEMENT='0',
                    READER_MCP_PATH_KEY_FILE=str(key_file))
         proc = subprocess.Popen(
             [sys.executable, str(Path(__file__).with_name("server.py"))],
@@ -71,6 +71,7 @@ def main():
             assert request("DELETE", "/api/identities/user", {"password":"wrong password"})[0] == 403
             assert request("DELETE", "/api/identities/user", {"password":"correct horse battery"})[0] == 409
             assert identities_file.read_bytes() == before
+            assert request("POST", "/api/oauth/overview", {"password":"correct horse battery"})[0] == 404
             assert request("POST", "/api/identities", {
                 "name": "test004", "password": "wrong password",
             })[0] == 403

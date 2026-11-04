@@ -1,0 +1,13 @@
+# Merge into the existing management site's block; do not create duplicate hosts.
+token.example.com {
+    log {
+        output discard
+    }
+    @oauth path /mcp /.well-known/oauth-protected-resource /.well-known/oauth-protected-resource/mcp /.well-known/oauth-authorization-server /oauth/authorize /oauth/token /oauth/register /oauth/revoke
+    handle @oauth {
+        reverse_proxy 127.0.0.1:8832
+    }
+    handle {
+        reverse_proxy 127.0.0.1:8860
+    }
+}

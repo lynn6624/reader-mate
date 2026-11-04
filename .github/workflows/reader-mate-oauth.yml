@@ -27,6 +27,8 @@ jobs:
           cache-dependency-path: 'mcp-edition/core/requirements-*.txt'
       - run: python -m pip install -r core/requirements-oauth.txt
       - run: python core/selftest-oauth.py
+      - run: python token-mcp/selftest.py
+      - run: python core/selftest-oauth-management.py --no-browser
       - run: python core/selftest-cloud.py
       - run: python core/selftest-members.py --no-browser
       - run: python core/selftest-proposals.py --no-browser
@@ -51,6 +53,7 @@ jobs:
       - run: python -m pip install -r core/requirements-oauth-e2e.txt
       - run: python -m playwright install --with-deps chromium
       - run: python core/selftest-oauth-browser.py --artifacts /tmp/oauth-browser-artifacts
+      - run: python core/selftest-oauth-management.py --artifacts /tmp/oauth-browser-artifacts/management
       - uses: actions/upload-artifact@v4
         if: always()
         with:

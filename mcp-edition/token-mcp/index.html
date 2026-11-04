@@ -75,8 +75,29 @@
 <div id="createdMember" class="hint"></div><label id="urlLabel">接入地址</label><div class="tok" id="urlVal"></div><button id="copyUrlBtn">复制地址</button>
 <div id="tokenDetail"><label>访问令牌</label><div class="tok" id="tokenVal"></div><button id="copyTokenBtn">复制令牌</button></div>
 <div id="instructions" class="hint"></div><button id="dismissBtn">我已保存，隐藏凭据</button></div></div>
+<div class="card"><h2>MCP OAuth 授权</h2>
+<div class="hint">为已有读者生成邀请，客户端通过浏览器授权。不会创建新阅读身份或替换原凭据。</div>
+<button id="oauthRefreshBtn">查看 / 刷新 OAuth 授权</button>
+<div id="oauthMsg" class="msg" role="status"></div>
+<div id="oauthControls" hidden>
+<label>OAuth MCP 地址（不含密钥）</label><div class="tok" id="oauthUrl"></div>
+<label for="oauthReader">绑定读者</label><select id="oauthReader"></select>
+<div class="row"><div><label for="oauthTtl">邀请码有效期</label>
+<select id="oauthTtl"><option value="3600">1 小时</option><option value="86400" selected>24 小时</option><option value="604800">7 天</option></select></div>
+<div><label for="oauthUses">可使用次数</label>
+<select id="oauthUses"><option value="1">一次性</option><option value="5">5 次</option><option value="10">10 次</option></select></div></div>
+<button class="primary" id="oauthInviteBtn">生成邀请码</button>
+<div id="oauthSecretBox" hidden><div class="big">邀请码仅显示这一次，请私下保存</div>
+<div id="oauthSecretDetail" class="hint"></div><div class="tok" id="oauthSecret"></div>
+<button id="oauthCopyBtn">复制邀请码</button><button id="oauthDismissBtn">我已保存，隐藏邀请码</button></div>
+<h2>邀请记录</h2><ul id="oauthInvites"></ul>
+<h2>客户端授权</h2><ul id="oauthGrants"></ul>
+<div class="row"><button id="oauthPrev">上一页</button><span id="oauthPage"></span><button id="oauthNext">下一页</button></div>
+<div class="hint">撤销邀请只阻止后续使用；撤销客户端授权会使该授权的访问与刷新凭证失效，保留读者身份和历史。</div>
+</div></div>
 </div><script>
 const $ = id => document.getElementById(id);
+let oauthPage=0;
 function msg(id, text, ok=false){ $(id).className='msg show '+(ok?'ok':'err'); $(id).textContent=text; }
 async function api(path,body){
   const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'});
@@ -84,8 +105,57 @@ async function api(path,body){
 }
 function pw(){ const password=$('adminPw').value; if(!password)throw new Error('请先输入管理员口令'); return password; }
 function clearSecret(){ $('tokenBox').hidden=true; ['urlVal','tokenVal','createdMember','instructions'].forEach(id=>$(id).textContent=''); }
+function clearOAuthSecret(){ $('oauthSecretBox').hidden=true; $('oauthSecret').textContent='';$('oauthSecretDetail').textContent=''; }
 $('dismissBtn').onclick=clearSecret;
-window.addEventListener('pagehide',()=>{clearSecret();$('adminPw').value='';});
+window.addEventListener('pagehide',()=>{clearSecret();clearOAuthSecret();$('adminPw').value='';});
+function clearOAuth(){clearOAuthSecret();$('oauthControls').hidden=true;$('oauthUrl').textContent='';$('oauthReader').replaceChildren();$('oauthInvites').replaceChildren();$('oauthGrants').replaceChildren();}
+const dateText=x=>new Date(x*1000).toLocaleString();
+async function refreshOAuth(wipe=true){
+  if(wipe)clearOAuthSecret();
+  const d=await api('/api/oauth/overview',{password:pw(),page:oauthPage});
+  $('oauthPrev').disabled=oauthPage===0;$('oauthNext').disabled=(oauthPage+1)*50>=Math.max(d.invite_total,d.grant_total);
+  $('oauthPage').textContent='第 '+(oauthPage+1)+' 页';
+  const prior=$('oauthReader').value;$('oauthReader').replaceChildren();
+  for(const s of d.subjects){const o=document.createElement('option');o.value=s.id;o.textContent=s.nickname+'（'+s.id+'）';$('oauthReader').append(o);}
+  if(d.subjects.some(s=>s.id===prior))$('oauthReader').value=prior;
+  $('oauthUrl').textContent=d.resource;$('oauthControls').hidden=false;$('oauthInviteBtn').disabled=!d.subjects.length;
+  for(const [kind,rows,target] of [['invite',d.invites,'oauthInvites'],['grant',d.grants,'oauthGrants']]){
+    const ul=$(target);ul.replaceChildren();
+    if(!rows.length){const li=document.createElement('li');li.className='empty';li.textContent='暂无记录';ul.append(li);}
+    for(const row of rows){
+      const li=document.createElement('li'),box=document.createElement('div');box.className='member-main';
+      const inactive=row.revoked||row.expires<=Date.now()/1000||(kind==='invite'&&row.remaining<=0);
+      const title=document.createElement('strong');title.textContent=row.subject+' · '+(row.revoked?'已撤销':row.expires<=Date.now()/1000?'已过期':kind==='invite'&&row.remaining<=0?'已用完':'有效');
+      const detail=document.createElement('div');detail.className='hint';
+      detail.textContent=row.id+' · 到期 '+dateText(row.expires)+(kind==='invite'?' · 剩余 '+row.remaining+' 次':' · '+row.scope+' · '+row.redirect_uris.join('、'));
+      box.append(title,detail);li.append(box);
+      if(!inactive){
+        const b=document.createElement('button');b.className='danger';b.textContent=kind==='invite'?'撤销邀请':'撤销此授权';
+        b.onclick=async()=>{
+          if(!confirm('确认撤销读者 '+row.subject+' 的'+(kind==='invite'?'这张邀请？已有客户端授权仍保留。':'这条客户端授权？该授权将无法继续访问或刷新，原读者凭据和历史保留。')))return;
+          b.disabled=true;
+          try{await api('/api/oauth/revoke-'+kind,{password:pw(),[kind+'_id']:row.id});await refreshOAuth();msg('oauthMsg','已撤销，原身份和历史保留。',true);}
+          catch(e){msg('oauthMsg',e.message);}finally{b.disabled=false;}
+        };li.append(b);
+      }ul.append(li);
+    }
+  }
+  msg('oauthMsg','已加载邀请与客户端授权，列表不返回邀请码或 Token。',true);
+}
+$('oauthRefreshBtn').onclick=()=>{oauthPage=0;refreshOAuth().catch(e=>{clearOAuth();msg('oauthMsg',e.message);});};
+for(const [id,delta] of [['oauthPrev',-1],['oauthNext',1]])$(id).onclick=()=>{oauthPage=Math.max(0,oauthPage+delta);refreshOAuth().catch(e=>{clearOAuth();msg('oauthMsg',e.message);});};
+$('oauthInviteBtn').onclick=async()=>{
+  const b=$('oauthInviteBtn');b.disabled=true;clearOAuthSecret();
+  try{
+    const d=await api('/api/oauth/invite',{password:pw(),reader_id:$('oauthReader').value,ttl:Number($('oauthTtl').value),uses:Number($('oauthUses').value)});
+    $('oauthSecret').textContent=d.invitation;$('oauthSecretDetail').textContent='绑定 '+d.reader_id+' · 到期 '+dateText(d.expires)+' · '+d.uses+' 次';
+    $('oauthSecretBox').hidden=false;
+    try{await refreshOAuth(false);}catch(e){msg('oauthMsg','邀请已生成，请先保存；列表刷新失败。');}
+  }catch(e){msg('oauthMsg',e.message);}finally{b.disabled=false;}
+};
+$('oauthDismissBtn').onclick=clearOAuthSecret;
+$('oauthCopyBtn').onclick=()=>copy('oauthSecret');
+$('adminPw').addEventListener('input',clearOAuth);
 $('kind').onchange=()=>{ $('agentOptions').hidden=$('kind').value!=='agent'; };
 const kinds={human:'人类读者',agent:'Agent',legacy:'历史成员（类型未确认）'};
 const channels={web:'网页',mcp:'MCP / Bearer','mcp-url':'MCP / 仅 URL',legacy:'原有凭据'};
