@@ -322,6 +322,12 @@ class Protocol(unittest.TestCase):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=router, client=('203.0.113.2',123)),
                                          base_url='http://oauth.example.test') as client:
                 self.assertEqual((await client.post('/mcp')).status_code, 400)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=router),
+                                         base_url='http://oauth.example.test') as client:
+                for headers in ({'X-Forwarded-Proto':'http'},
+                                [('X-Forwarded-Proto','https'),('X-Forwarded-Proto','http')],
+                                {'X-Forwarded-Proto':'http, https'}):
+                    self.assertEqual((await client.post('/mcp',headers=headers)).status_code,400)
         asyncio.run(check())
 
     def test_cli_and_persistent_limits(self):

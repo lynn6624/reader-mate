@@ -65,12 +65,17 @@ class OAuthRouter:
             return await self.legacy(scope, receive, send)
         if len(hosts) != 1:
             return await self.failure(scope, receive, send, 400, 'invalid_request')
-        # Listener is loopback-only. Forwarded headers are never trusted.
+        # Listener is loopback-only. Headers cannot establish trust in a peer.
         try:
             trusted_proxy = ipaddress.ip_address((scope.get('client') or ('',))[0]).is_loopback
         except ValueError:
             trusted_proxy = False
         if scope.get('scheme') != 'https' and not trusted_proxy:
+            return await self.failure(scope, receive, send, 400, 'invalid_request')
+        protocols = [v for k,v in scope['headers'] if k.lower()==b'x-forwarded-proto']
+        # A trusted TLS terminator must not turn an explicitly HTTP visitor into HTTPS.
+        # Cloudflare overwrites this header; unknown/multiple values fail closed.
+        if trusted_proxy and scope.get('scheme') != 'https' and protocols and protocols != [b'https']:
             return await self.failure(scope, receive, send, 400, 'invalid_request')
         origins = [value.decode('ascii', 'replace') for key, value in scope['headers'] if key.lower() == b'origin']
         if (len(origins) > 1 or not browser_origin_allowed(origins[0] if origins else None,

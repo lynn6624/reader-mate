@@ -199,7 +199,25 @@ class Handler(BaseHTTPRequestHandler):
 
     # --- 路由 ---
 
+    def _insecure_forwarding(self):
+        values = self.headers.get_all("X-Forwarded-Proto", [])
+        return os.environ.get("READER_OAUTH_MANAGEMENT", "0") == "1" and bool(values) and values != ["https"]
+
     def do_GET(self):
+        if self._insecure_forwarding():
+            if self.headers.get_all("X-Forwarded-Proto", []) == ["http"]:
+                try:
+                    import oauth_management
+                    issuer = oauth_management.settings()[0]
+                    self.send_response(308)
+                    self.send_header("Location", issuer + urlsplit(self.path).path)
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                except (ValueError, ImportError):
+                    pass
+            return self._send(400, {"ok": False, "error": "请使用 HTTPS"})
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
             try:
@@ -228,6 +246,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, {"ok": False, "error": "没有这个端点"})
 
     def do_POST(self):
+        if self._insecure_forwarding():
+            return self._send(400, {"ok": False, "error": "请使用 HTTPS"})
         path = self.path.split("?", 1)[0]
         body = self._json_body()
 
@@ -340,6 +360,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, {"ok": False, "error": "没有这个端点"})
 
     def do_DELETE(self):
+        if self._insecure_forwarding():
+            return self._send(400, {"ok": False, "error": "请使用 HTTPS"})
         path = self.path.split("?", 1)[0]
         body = self._json_body()
         prefix = "/api/identities/"

@@ -81,6 +81,12 @@ def run(browser, artifacts=None):
                         headers={'Content-Type':'text/plain'}).status_code==400
                     overview=post('overview')
                     assert overview.status_code==200
+                    assert client.post(base+'/api/oauth/overview',json={'password':password},
+                        headers={'X-Forwarded-Proto':'http'}).status_code==400
+                    redirected=client.get(base+'/',headers={'X-Forwarded-Proto':'http'})
+                    assert redirected.status_code==308 and redirected.headers['location']==spec['issuer']+'/'
+                    assert client.post(base+'/api/login',json={'password':password},
+                        headers={'X-Forwarded-Proto':'http, https'}).status_code==400
                     assert web not in {s['id'] for s in overview.json()['subjects']}
                     assert post('invite',reader_id=web).status_code==400
                     assert post('invite',reader_id='missing').status_code==400

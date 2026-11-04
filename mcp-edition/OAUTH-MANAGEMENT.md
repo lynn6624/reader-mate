@@ -23,6 +23,8 @@ Token 域名须与旧 Header/URL MCP 主机不同，符合当前已验证的主�
 
 浏览器管理员请求继续使用 JSON 中的现有口令；拒绝不匹配的 Origin、非 JSON、URL 查询参数，OAuth 管理请求有独立持久限流。页面禁止 framing，响应 no-store / no-referrer。管理入口是受信任同源页面；不要在该域名托管第三方脚本或不受信任应用。
 
+可信回环代理若明确声明访客协议为 HTTP，新 OAuth 请求拒绝处理；启用 OAuth 管理后，管理页面的 HTTP GET 跳转 HTTPS，HTTP 写请求拒绝。协议头不能让非可信连接获得信任；重复或未知协议值失败关闭。[Cloudflare 文档](https://developers.cloudflare.com/fundamentals/reference/http-headers/#x-forwarded-proto)说明其会覆盖访客自行设置的 X-Forwarded-Proto。上线必须实测 HTTP 与伪造该头均不能访问新接口，不能只验证 HTTPS 正向流程。
+
 ## 配置与实现
 
 Token 服务显式设置 READER_OAUTH_MANAGEMENT=1，issuer/resource/DB 与 MCP 相同；TOKEN_PUBLIC_ORIGIN 指向实际管理页面 origin。默认关闭，旧成员管理独立运行。示例见 deploy/token-oauth.env.example。OAuth 库仍须先由本机 CLI 初始化，目录 0700、文件 0600、与 reader 账户权限一致；配置缺失/库损坏返回失败，不自动创建或替换库。
