@@ -1,0 +1,19 @@
+{
+  "merged_production_candidate_validated": true,
+  "oauth_rules": {
+    "/mcp": true,
+    "/.well-known/oauth-protected-resource": true,
+    "/.well-known/oauth-protected-resource/mcp": true,
+    "/.well-known/oauth-authorization-server": true,
+    "/oauth/authorize": true,
+    "/oauth/token": true,
+    "/oauth/register": true,
+    "/oauth/revoke": true
+  },
+  "old_route_checks": 7,
+  "old_route_checks_unchanged": true,
+  "host_header_explicit": true,
+  "candidate_is_private": true,
+  "production_config_unchanged": true,
+  "production_modified": false
+}

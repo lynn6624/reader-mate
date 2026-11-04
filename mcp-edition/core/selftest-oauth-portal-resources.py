@@ -62,6 +62,7 @@ def run(args, report):
     host=urlsplit(spec['issuer']).netloc
     identities=root/'core/data/identities.json'
     before_ids=identities.read_bytes()
+    utf16_units=len((root/'core/书库/oauth-large.txt').read_text(encoding='utf-8').encode('utf-16-le'))//2
     store=Store(root/'state/oauth.sqlite3',spec['issuer'],spec['resource'])
     # Preload more than one page outside the workload; plaintext values are never printed.
     for _ in range(55):store.invite('004')
@@ -71,6 +72,8 @@ def run(args, report):
             samples.append(int((group/'memory.current').read_text()));stop.wait(.05)
     sampler=threading.Thread(target=sample,daemon=True);sampler.start()
     started=time.monotonic();grants={};sensitive=[credentials['password']]
+    sensitive.extend(v for v in json.loads(before_ids).values() if isinstance(v,str))
+    sensitive.extend((root/'state'/name).read_text().strip() for name in ('path-key','gpt-key'))
     try:
         with httpx.Client(trust_env=False,verify=verify,timeout=60,
                 headers={'Host':host,'Origin':spec['issuer']}) as client:
@@ -137,7 +140,7 @@ def run(args, report):
             check(identities.read_bytes()==before_ids,'identity_unchanged')
             report.update(shared_https_routes=True,portal_generated_invites=True,concurrent_admin=True,
                 bounded_pages=True,readers=3,rounds=args.rounds,tool_count=15,refresh_and_admin_revocation=True,
-                identity_unchanged=True,utf16_units=2000009)
+                identity_unchanged=True,utf16_units=utf16_units)
     finally:
         stop.set();sampler.join(timeout=2);after=events(group)
         report.update(elapsed_seconds=round(time.monotonic()-started,3),sampled_peak_bytes=max(samples,default=0),
@@ -149,6 +152,7 @@ def run(args, report):
     for log in (root/'logs').glob('*.log'):
         check(all(value.encode() not in log.read_bytes() for value in sensitive),'credential_in_log')
     check(all(report['memory_event_delta'].get(k,0)==0 for k in ('max','oom','oom_kill')),'hard_pressure_or_oom')
+    check(all(report['memory_events_total'].get(k,0)==0 for k in ('max','oom','oom_kill')),'startup_hard_pressure_or_oom')
     report.update(pass_=True,logs_no_plaintext_credentials=True,
         tls='ephemeral test CA verified; loopback HTTPS endpoint with canonical Host; not public CA')
 
