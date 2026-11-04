@@ -43,6 +43,16 @@
 
 ## 尚待用户验证
 
+2026-11-05 更新：用户取得 ChatGPT 创建连接的具体错误：动态客户端注册端点返回403。逐文件对照成功的隔离版本后，OAuth服务器与存储逐字节一致，MCP与身份门禁统一换行后一致，依赖版本相同；授权路由唯一行为变化是新增访客协议校验。短时只读观察显示用户重试窗口内发现请求全部200、Host与https协议头匹配，没有DCR请求到达源站。
+
+随后从VPS访问正式公网入口，发现GET为200，而POST /oauth/register和POST /mcp均返回HTML 403，带cf-mitigated: challenge，确认复现了Cloudflare边缘挑战。先前从另一客户端网络检查通过，不能代表ChatGPT或数据中心出口可用。正式客户端验收仍未通过；具体命中产品/规则须通过Cloudflare安全事件确认，不能只看到403就指定某一规则。
+
+新增无凭证公网检查：`python3 core/check-oauth-public.py --issuer https://实际Token域名`。应分别从VPS和客户端网络运行。发现接口须为200；无效空JSON注册须由应用返回400 invalid_client_metadata，匿名MCP须401且带发现挑战。检查不生成客户端或读者授权、不传递口令或Token，不保存响应正文；403挑战必须作为失败。无效注册会占用一次注册限流计数，避免高频重复执行。
+
+同一VPS出口、地址和空请求体的受控对比进一步确认请求特征差异：python-httpx请求头两次均为403挑战，诊断请求头返回正常JSON 401，简单Mozilla请求头仍为403。因此检查默认采用已固定HTTPX版本的请求头，可用--user-agent做对照；仅修改诊断请求头后通过不能宣称ChatGPT已修复，最终必须验证真实客户端。具体命中规则尚待安全事件核对，不将此结果当作已确定某种Bot产品或规则名称。
+
+修复边缘规则时，仅对实际OAuth主机和明确的协议路径调整命中的挑战规则；根页面与/api/*管理端不在豁免范围。保留应用层邀请码、PKCE、CSRF、限流、Token验证和原身份门禁。具体策略须区分WAF/Super Bot Fight Mode与普通Bot Fight Mode；后者不能由WAF Skip规则跳过，见[Cloudflare说明](https://developers.cloudflare.com/bots/troubleshooting/false-positives/)。变更前保存原规则与顺序，回滚恢复该项规则；修复后重测公网POST、真实ChatGPT注册/授权及原004数据连续性。尚未修改Cloudflare策略，未关闭全站防护。
+
 用户用原管理口令选择稳定 ID 004 生成一次性邀请，在真实 ChatGPT 中新增正式 OAuth URL，确认身份并读回原进度/建议，随后验证刷新和恢复。旧连接先保留；真实生产数据连续性不能用合成环境通过代替。
 
 撤销单个 OAuth 客户端使用 OAuth 区的授权按钮；旧成员凭据的撤销会让原身份门禁失效，也会使对应 OAuth 请求失败。旧 URL 的最终停用仍是阶段 4 单独确认事项。
