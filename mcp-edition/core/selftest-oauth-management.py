@@ -63,7 +63,12 @@ def run(browser, artifacts=None):
                 with httpx.Client(trust_env=False,timeout=10) as client:
                     for _ in range(100):
                         try:
-                            if client.get(base+'/api/status').status_code==200:break
+                            if (client.get(base+'/api/status').status_code==200
+                                    and client.get('http://127.0.0.1:'+str(spec['web_port'])+'/api/ping').status_code==200
+                                    and client.get('http://127.0.0.1:'+str(spec['mcp_port'])+
+                                        '/.well-known/oauth-authorization-server',
+                                        headers={'Host':urlsplit(spec['issuer']).netloc}).status_code==200):
+                                break
                         except httpx.HTTPError:pass
                         time.sleep(.1)
                     else:raise AssertionError('portal startup')
