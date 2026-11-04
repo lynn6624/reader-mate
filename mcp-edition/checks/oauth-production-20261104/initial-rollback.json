@@ -1,0 +1,6 @@
+{
+  "reason": "HTTP visitor protocol was not rejected by trusted loopback adapter",
+  "rollback_applied": true,
+  "database_and_business_data_retained": true,
+  "fixed_revision": "3ef03a32b1646eec827b6ab239433664c1ccbd9e"
+}

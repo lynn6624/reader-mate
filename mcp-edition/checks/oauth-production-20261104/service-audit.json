@@ -1,0 +1,15 @@
+{
+  "revision": "3ef03a32b1646eec827b6ab239433664c1ccbd9e",
+  "deployed_source_hashes_match": true,
+  "services_active": true,
+  "recent_journals_scanned": 4,
+  "no_complete_legacy_or_oauth_credentials_in_recent_journals": true,
+  "production_oauth_object_counts": {
+    "client": 0,
+    "invite": 0,
+    "grant": 0
+  },
+  "old_credentials_not_revoked": true,
+  "oauth_database_owner": 997,
+  "oauth_database_mode": "0o600"
+}

@@ -1,0 +1,25 @@
+{
+  "activated": true,
+  "revision": "3ef03a32b1646eec827b6ab239433664c1ccbd9e",
+  "oauth_issuer": "https://management.example.com",
+  "resource": "https://management.example.com/mcp",
+  "web_and_caddy_pids_unchanged": {
+    "reader-web.service": true,
+    "caddy.service": true
+  },
+  "canonical_data_sha_unchanged": {
+    "identities.json": true,
+    "progress.json": true,
+    "notes.json": true
+  },
+  "memory_event_delta": {
+    "low": 0,
+    "high": 0,
+    "max": 0,
+    "oom": 0,
+    "oom_kill": 0
+  },
+  "memory_current_bytes": 104800256,
+  "old_credentials_not_revoked": true,
+  "external_verification_pending": true
+}

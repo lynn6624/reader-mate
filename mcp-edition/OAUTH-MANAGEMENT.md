@@ -1,6 +1,6 @@
 # OAuth 并入原 Token 管理页
 
-2026-11-04：按用户要求替代“新增 OAuth 域名、通过 CLI 发邀请”的上线草案。仍在 codex/mcp-oauth / PR #11 分支，尚未部署生产。阶段 2 验收记录保留为历史证据；新增管理界面不能据此冒称已部署。
+2026-11-04：按用户要求替代“新增 OAuth 域名、通过 CLI 发邀请”的上线草案。用户确认后已部署到原 Token 主机，正式 ChatGPT 数据连续性仍待用户验证，见 [OAUTH-PRODUCTION.md](OAUTH-PRODUCTION.md)。代码保留在 codex/mcp-oauth / PR #11，尚未合并。阶段 2 合成验收记录仍为历史证据。
 
 ## 使用方式
 
@@ -13,6 +13,8 @@
 ## 同域路径分流
 
 推荐复用现有 Token 管理 HTTPS 域名，例如 token.example.com：
+
+`token.example.com` 是公开文档的占位域名，不能直接访问。实际部署须使用自己的 Token 域名，同时配置阅读页的“管理共读身份令牌”跳转。执行 `python3 deploy/configure-token-link.py --html core/web/reader.html --origin https://实际Token域名`，再加 `--check` 可只检查；脚本拒绝 example.com 等占位域名，只更新链接并保留原文件权限。页面逐次从磁盘读取，更新后刷新即可，无需重启 Web。再次发布公开版 reader.html 后须重复配置，避免示例链接重新覆盖正式地址。
 
 | 路径 | 后端 |
 | --- | --- |
@@ -37,8 +39,8 @@ core/oauth_management.py 只加载标准库、member_store 和 oauth_store，避
 
 core/selftest-oauth-management.py 验证真实管理 HTTP → 生成邀请 → OAuth 交换 → 官方 SDK 以 004 调用工具 → 独立撤销邀请和授权；覆盖管理员/Origin/格式校验、权限、分页、原身份文件不变、日志不泄密。真实 Chrome 测试覆盖桌面/手机生成与隐藏、无 localStorage、修改口令后清空和无水平溢出。可用 --no-browser 跳过浏览器，CI 分别运行两种模式。原 token-mcp/selftest.py 也加入 OAuth CI。
 
-新版同域 HTTPS、管理接口并发、生产同款 Python3.12/3.10 组合及 256MiB 共享预算已在新合成环境复测通过，范围、采样误差、节流及脱敏证据见 [OAUTH-MANAGEMENT-VALIDATION.md](OAUTH-MANAGEMENT-VALIDATION.md)。实际 Tunnel 合并候选已离线验证，但未应用到生产。
+新版同域 HTTPS、管理接口并发、生产同款 Python3.12/3.10 组合及 256MiB 共享预算已在新合成环境复测通过，范围、采样误差、节流及脱敏证据见 [OAUTH-MANAGEMENT-VALIDATION.md](OAUTH-MANAGEMENT-VALIDATION.md)。实际 Tunnel 合并候选验证后已随本次生产发布应用，发布记录见 OAUTH-PRODUCTION.md。
 
 管理端更新 server.py / index.html，新增轻量 oauth_management.py 及管理环境配置；需重启 Token 与 MCP，Web 不需重启。应用已有 Tunnel 的路径规则还需重启 reader 专用隧道，现有连接可能短暂重连，旧凭据继续有效，需纳入上线确认范围。生产公网路由及真实数据连续性仍须发布后单独验收。
 
-回滚先禁用 READER_OAUTH_MANAGEMENT 并还原本次 Token 界面/服务文件及新增代理规则，保留 OAuth 数据库与审计；如同时关闭 MCP OAuth，按 OAUTH.md 关闭。只回退代码/新增配置，不回退期间产生的阅读数据，不撤销旧凭据。生产发布仍需用户明确确认，旧的独立域名审批包已失效。
+回滚先禁用 READER_OAUTH_MANAGEMENT 并还原本次 Token 界面/服务文件及新增代理规则，保留 OAuth 数据库与审计；如同时关闭 MCP OAuth，按 OAUTH.md 关闭。只回退代码/新增配置，不回退期间产生的阅读数据，不撤销旧凭据。本次生产发布已经用户确认；旧的独立域名审批包已失效，停用旧凭据仍须另行确认。

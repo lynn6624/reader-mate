@@ -29,6 +29,8 @@ sudo -u reader python3 deploy/init-token-bootstrap.py
 
 `reader.example.com` 指向 Web 阅读页；其 `/mcp/*` 路由转发到 8832，其余路径到 8831。`token.example.com` 转发到 8860。两者可通过 Cloudflare Tunnel 橙云代理，示例见 `deploy/cloudflared-ingress.example.yml`。需要 ChatGPT 的无挑战直连入口时，把 `mcp.example.com` 设为灰云 DNS-only A 记录，使用 Caddy 将 HTTPS 443 转发到 8832，示例见 `deploy/Caddyfile.grey.example`。安全组只开放 443；不要开放 8831、8832、8860。
 
+这些域名均为占位示例。部署或再次更新 `core/web/reader.html` 时，先备份页面，再运行 `python3 deploy/configure-token-link.py --html core/web/reader.html --origin https://实际Token域名`，将页面“管理共读身份令牌”的链接替换成实际 HTTPS 管理地址；追加 `--check` 可作为发布检查。脚本只替换一个链接，保留文件权限，不改业务数据；页面刷新生效，无需重启。不要把 `token.example.com` 作为真实接入地址。
+
 **仅安装可选 Kindle 扩展时：** `/k/<一次性码>`、`/kindle`、`/kindle/page` 也必须转发到 Web 8831。Web 服务使用 `READER_MCP_PUBLIC_HOST` 生成 `https://reader.example.com/k/...`；若阅读页使用不同域名，可设 `READER_KINDLE_PUBLIC_BASE=https://reader.example.com`。两者都必须指向同一 Web 服务并使用 HTTPS。不要记录完整配对路径。
 
 通用 MCP URL 为 `https://reader.example.com/mcp/<state/mcp-path-key.txt 中的值>`；客户端还需填写自己的 Bearer 身份令牌。令牌管理页只会在管理员成功创建身份后同时返回这两项。示例 ChatGPT 专用 URL 为 `https://mcp.example.com/mcp/<state/mcp-004-url-key.txt 中的值>`，Auth 选 None；服务端会按现有 `004` 身份令牌鉴权。此 URL 本身可调用 004 的读写工具，应像口令一样保管；泄露时轮换专用路径钥匙并重启 MCP 服务。不要在代理访问日志中记录完整 MCP 路径。
