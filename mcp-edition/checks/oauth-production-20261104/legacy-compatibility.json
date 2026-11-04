@@ -1,0 +1,10 @@
+{
+  "header_identity_and_15_tools": true,
+  "url_identity_and_15_tools": true,
+  "canonical_data_unchanged": {
+    "identities.json": true,
+    "progress.json": true,
+    "notes.json": true
+  },
+  "original_env_unchanged": true
+}

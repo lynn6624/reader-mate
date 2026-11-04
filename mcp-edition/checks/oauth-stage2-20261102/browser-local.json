@@ -1,0 +1,34 @@
+{
+  "public_https": false,
+  "browser": "Chrome",
+  "tls": "ephemeral private CA, narrowly pinned in browser",
+  "production_access": false,
+  "pass": true,
+  "cross_origin_callback": true,
+  "tls_metadata": true,
+  "step": "mobile_token_mcp",
+  "browser_responses": [
+    {
+      "path": "/oauth/authorize",
+      "status": 200
+    },
+    {
+      "path": "/oauth/authorize",
+      "status": 200
+    },
+    {
+      "path": "/oauth/authorize",
+      "status": 302
+    },
+    {
+      "path": "/client-callback",
+      "status": 200
+    }
+  ],
+  "desktop_secure_cookie": true,
+  "natural_expiry_and_refresh": true,
+  "desktop_authorization_mcp_revoke": true,
+  "mobile_secure_cookie": true,
+  "mobile_authorization_mcp_revoke": true,
+  "no_credential_log_or_identity_changes": true
+}

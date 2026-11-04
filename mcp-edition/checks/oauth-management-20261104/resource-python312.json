@@ -1,0 +1,49 @@
+{
+  "pass_": true,
+  "production_access": false,
+  "shared_https_routes": true,
+  "portal_generated_invites": true,
+  "concurrent_admin": true,
+  "bounded_pages": true,
+  "readers": 3,
+  "rounds": 2,
+  "tool_count": 15,
+  "refresh_and_admin_revocation": true,
+  "identity_unchanged": true,
+  "utf16_units": 2000009,
+  "elapsed_seconds": 7.935,
+  "sampled_peak_bytes": 204800000,
+  "cgroup_peak_bytes": null,
+  "peak_source": "50ms memory.current sampling; memory.peak reported separately when available",
+  "memory_event_delta": {
+    "low": 0,
+    "high": 240,
+    "max": 0,
+    "oom": 0,
+    "oom_kill": 0
+  },
+  "memory_events_total": {
+    "low": 0,
+    "high": 240,
+    "max": 0,
+    "oom": 0,
+    "oom_kill": 0
+  },
+  "memory_max_bytes": 268435456,
+  "memory_high_bytes": 201326592,
+  "scope": "synthetic Web + MCP OAuth + OAuth-enabled Token portal; controller and separate Caddy excluded",
+  "logs_no_plaintext_credentials": true,
+  "tls": "ephemeral test CA verified; loopback HTTPS endpoint with canonical Host; not public CA",
+  "production_unchanged": true,
+  "service_states": {
+    "reader-oauth-portal-20261104b-web.service": "active",
+    "reader-oauth-portal-20261104b-mcp.service": "active",
+    "reader-oauth-portal-20261104b-portal.service": "active",
+    "reader-oauth-portal-20261104b-proxy.service": "active"
+  },
+  "interpreters": {
+    "web": "3.12",
+    "mcp": "3.12",
+    "portal": "3.12"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "public_CA_verified": true,
+  "anonymous_mcp_status": 401,
+  "challenge_resource_metadata": true,
+  "resource_metadata_matches": true,
+  "issuer_and_pkce_match": true,
+  "management_page_has_oauth": true,
+  "existing_admin_configuration_retained": true,
+  "admin_unauthenticated_status": 403,
+  "wrong_origin_status": 403,
+  "http_transport_status": 400,
+  "http_redirects_to_https": false,
+  "http_oauth_rejected": true,
+  "http_spoofed_proto_rejected": true,
+  "http_management_redirects": true,
+  "http_admin_post_rejected": true,
+  "public_checks_passed": true
+}

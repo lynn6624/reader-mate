@@ -1,0 +1,9 @@
+{
+  "reader_link_configured": true,
+  "http_page_has_actual_token_link": true,
+  "only_href_changed": true,
+  "web_not_restarted": true,
+  "identity_progress_notes_unchanged": true,
+  "before_sha256": "87e3419e7efd8b1694a2fcd3cbc19870e73f06e260caa920891abe975a7dc8e0",
+  "after_sha256": "a7566d4caca2b95a1ed94124a2a642e1935a84bc7c386a3c2e8be920b4c52051"
+}

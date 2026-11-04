@@ -1,0 +1,27 @@
+{
+  "pass": true,
+  "production_access": false,
+  "scope": "synthetic Web + MCP OAuth + token portal only, shared 256/192 MiB; controller/launcher/proxy/tunnel excluded to match production",
+  "memory_max_bytes": 268435456,
+  "memory_high_bytes": 201326592,
+  "readers": 3,
+  "rounds": 2,
+  "utf16_units": 2000009,
+  "elapsed_seconds": 6.844,
+  "sampled_peak_bytes": 203616256,
+  "cgroup_peak_bytes": null,
+  "peak_source": "50ms sampling; kernel has no memory.peak",
+  "memory_event_delta": {
+    "low": 0,
+    "high": 23,
+    "max": 0,
+    "oom": 0,
+    "oom_kill": 0
+  },
+  "production_unchanged": true,
+  "service_state": {
+    "reader-oauth-test-20261102-web.service": "active",
+    "reader-oauth-test-20261102-mcp.service": "active",
+    "reader-oauth-test-20261102-portal.service": "active"
+  }
+}

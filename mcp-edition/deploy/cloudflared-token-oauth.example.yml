@@ -1,0 +1,11 @@
+# Only a snippet. Insert the specific rule BEFORE the existing token host rule.
+# Preserve all other host rules, tunnel settings and the final catch-all.
+ingress:
+  - hostname: token.example.com
+    path: '^/(mcp|\.well-known/(oauth-protected-resource(/mcp)?|oauth-authorization-server)|oauth/(authorize|token|register|revoke))$'
+    service: http://127.0.0.1:8832
+    originRequest:
+      httpHostHeader: token.example.com
+  - hostname: token.example.com
+    service: http://127.0.0.1:8860
+  - service: http_status:404

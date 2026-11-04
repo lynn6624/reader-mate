@@ -1,0 +1,20 @@
+{
+  "actual_cloudflared_cli_validated": true,
+  "rule_checks": {
+    "/mcp": true,
+    "/.well-known/oauth-protected-resource": true,
+    "/.well-known/oauth-protected-resource/mcp": true,
+    "/.well-known/oauth-authorization-server": true,
+    "/oauth/authorize": true,
+    "/oauth/token": true,
+    "/oauth/register": true,
+    "/oauth/revoke": true,
+    "/": true,
+    "/api/status": true,
+    "/api/oauth/overview": true,
+    "/api/oauth/invite": true,
+    "/api/members": true,
+    "/mcp/member/not-a-key": true
+  },
+  "production_modified": false
+}

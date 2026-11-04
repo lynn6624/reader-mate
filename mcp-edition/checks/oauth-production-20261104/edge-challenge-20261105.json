@@ -1,0 +1,69 @@
+{
+  "date_Asia_Shanghai": "2026-11-05",
+  "edge_challenge_reproduced": true,
+  "edge_product_or_rule_identified": true,
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/.well-known/oauth-authorization-server",
+      "status": 200,
+      "content_type": "application/json",
+      "server": "cloudflare",
+      "cf_mitigated": null,
+      "json_response": true,
+      "cloudflare_challenge_markers": false
+    },
+    {
+      "method": "POST",
+      "path": "/oauth/register",
+      "status": 403,
+      "content_type": "text/html; charset=UTF-8",
+      "server": "cloudflare",
+      "cf_mitigated": "challenge",
+      "json_response": false,
+      "cloudflare_challenge_markers": true
+    },
+    {
+      "method": "POST",
+      "path": "/mcp",
+      "status": 403,
+      "content_type": "text/html; charset=UTF-8",
+      "server": "cloudflare",
+      "cf_mitigated": "challenge",
+      "json_response": false,
+      "cloudflare_challenge_markers": true
+    }
+  ],
+  "controlled_agent_comparison": [
+    {
+      "agent_case": "httpx",
+      "status": 403,
+      "cf_mitigated": "challenge",
+      "content_type": "text/html; charset=UTF-8"
+    },
+    {
+      "agent_case": "diagnostic",
+      "status": 401,
+      "cf_mitigated": null,
+      "content_type": "application/json"
+    },
+    {
+      "agent_case": "browser",
+      "status": 403,
+      "cf_mitigated": "challenge",
+      "content_type": "text/html; charset=UTF-8"
+    },
+    {
+      "agent_case": "httpx_repeat",
+      "status": 403,
+      "cf_mitigated": "challenge",
+      "content_type": "text/html; charset=UTF-8"
+    }
+  ],
+  "cloudflare_configuration_changed": false,
+  "confirmed_service": "Bot Fight Mode",
+  "confirmed_rule_id": "bot_fight_mode",
+  "confirmed_action": "managed_challenge",
+  "event_matches_exact_diagnostic_ray_id": true,
+  "ordinary_waf_skip_applicable": false
+}

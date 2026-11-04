@@ -1,0 +1,12 @@
+{
+  "all_test_logs_checked": 4,
+  "no_plaintext_credentials": true,
+  "no_private_key_in_logs": true,
+  "test_services_and_proxy_stopped": true,
+  "production_fingerprints_and_pids_unchanged": true,
+  "production_services_active": true,
+  "private_test_state_retained": true,
+  "no_global_ca_trust_changed": true,
+  "no_dns_change": true,
+  "no_production_credentials_revoked": true
+}

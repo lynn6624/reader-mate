@@ -1,0 +1,7 @@
+{
+  "public_CA_verified": true,
+  "production_access": false,
+  "anonymous_challenge_status": 401,
+  "metadata_status": 200,
+  "server_available_after_revocation": true
+}

@@ -1,0 +1,18 @@
+{
+  "test_services_stopped": true,
+  "test_tunnel_stopped": true,
+  "test_access_ttl_restored": 900,
+  "test_runtime_lifetime_override_removed": true,
+  "private_database_and_audit_retained": true,
+  "production_unchanged": true,
+  "production_services_active": true,
+  "old_test_still_active": true,
+  "service_states": {
+    "reader-oauth-test-20261102-tunnel.service": "inactive",
+    "reader-oauth-test-20261102-bridge.service": "inactive",
+    "reader-oauth-test-20261102-mcp.service": "inactive",
+    "reader-oauth-test-20261102-web.service": "inactive",
+    "reader-oauth-test-20261102-portal.service": "inactive",
+    "reader-oauth-test-20261102-services.service": "inactive"
+  }
+}

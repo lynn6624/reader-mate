@@ -1,0 +1,12 @@
+# Separate hostname; retain the existing 001 and 004 proxy blocks unchanged.
+# Caddy obtains a certificate and redirects HTTP to HTTPS after real DNS configuration.
+# Do not enable access logs, body/header tracing, or logging of Location responses.
+oauth-mcp.example.com {
+    @oauth path /mcp /.well-known/oauth-protected-resource /.well-known/oauth-protected-resource/mcp /.well-known/oauth-authorization-server /oauth/authorize /oauth/token /oauth/register /oauth/revoke
+    handle @oauth {
+        reverse_proxy 127.0.0.1:8832
+    }
+    handle {
+        respond 404
+    }
+}
