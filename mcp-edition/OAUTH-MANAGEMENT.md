@@ -35,6 +35,6 @@ core/oauth_management.py 只加载标准库、member_store 和 oauth_store，避
 
 core/selftest-oauth-management.py 验证真实管理 HTTP → 生成邀请 → OAuth 交换 → 官方 SDK 以 004 调用工具 → 独立撤销邀请和授权；覆盖管理员/Origin/格式校验、权限、分页、原身份文件不变、日志不泄密。真实 Chrome 测试覆盖桌面/手机生成与隐藏、无 localStorage、修改口令后清空和无水平溢出。可用 --no-browser 跳过浏览器，CI 分别运行两种模式。原 token-mcp/selftest.py 也加入 OAuth CI。
 
-上线前按新拓扑重审 Token 主机的实际代理规则；服务端仅新增两个管理模块文件/界面及环境配置。阶段 2 的预算测试针对旧管理进程，新管理路径虽采用轻量导入和分页，仍需在新版隔离部署中复核总预算，不能把旧测量当作本次实测值。
+上线前按新拓扑重审 Token 主机的实际代理规则。管理端更新 server.py / index.html，并新增轻量 oauth_management.py 及管理环境配置；需重启 Token 与 MCP，Web 不需重启。若使用已有 Tunnel，应用路径规则通常还需重启该隧道，现有连接可能短暂重连，旧凭据继续有效，需纳入上线确认范围。阶段 2 的预算测试针对旧管理进程，新管理路径虽采用轻量导入和分页，仍需在新版隔离部署中复核总预算，不能把旧测量当作本次实测值。
 
 回滚先禁用 READER_OAUTH_MANAGEMENT 并还原本次 Token 界面/服务文件及新增代理规则，保留 OAuth 数据库与审计；如同时关闭 MCP OAuth，按 OAUTH.md 关闭。只回退代码/新增配置，不回退期间产生的阅读数据，不撤销旧凭据。生产发布仍需用户明确确认，旧的独立域名审批包已失效。
