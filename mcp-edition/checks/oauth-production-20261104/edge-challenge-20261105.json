@@ -1,7 +1,7 @@
 {
   "date_Asia_Shanghai": "2026-11-05",
   "edge_challenge_reproduced": true,
-  "edge_product_or_rule_identified": false,
+  "edge_product_or_rule_identified": true,
   "requests": [
     {
       "method": "GET",
@@ -60,5 +60,10 @@
       "content_type": "text/html; charset=UTF-8"
     }
   ],
-  "cloudflare_configuration_changed": false
+  "cloudflare_configuration_changed": false,
+  "confirmed_service": "Bot Fight Mode",
+  "confirmed_rule_id": "bot_fight_mode",
+  "confirmed_action": "managed_challenge",
+  "event_matches_exact_diagnostic_ray_id": true,
+  "ordinary_waf_skip_applicable": false
 }

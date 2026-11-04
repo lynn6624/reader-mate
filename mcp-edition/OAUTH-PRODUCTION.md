@@ -53,6 +53,8 @@
 
 修复边缘规则时，仅对实际OAuth主机和明确的协议路径调整命中的挑战规则；根页面与/api/*管理端不在豁免范围。保留应用层邀请码、PKCE、CSRF、限流、Token验证和原身份门禁。具体策略须区分WAF/Super Bot Fight Mode与普通Bot Fight Mode；后者不能由WAF Skip规则跳过，见[Cloudflare说明](https://developers.cloudflare.com/bots/troubleshooting/false-positives/)。变更前保存原规则与顺序，回滚恢复该项规则；修复后重测公网POST、真实ChatGPT注册/授权及原004数据连续性。尚未修改Cloudflare策略，未关闭全站防护。
 
+同日用户提供安全事件导出，与诊断请求的完整Ray ID精确匹配：POST /oauth/register、source=botFight、ruleId=bot_fight_mode、action=managed_challenge。现已确认命中普通Bot Fight Mode，上段的路径豁免设想不能通过普通WAF Skip实现。后续须选择独立直连HTTPS入口、支持精确豁免的防护方案，或经单独确认调整该域名的Bot Fight Mode；不能声称添加一条路径Skip即已修复。事件导出原件及IP/查询等字段不进入Git，仅保存脱敏摘要。生产策略尚未变更。
+
 用户用原管理口令选择稳定 ID 004 生成一次性邀请，在真实 ChatGPT 中新增正式 OAuth URL，确认身份并读回原进度/建议，随后验证刷新和恢复。旧连接先保留；真实生产数据连续性不能用合成环境通过代替。
 
 撤销单个 OAuth 客户端使用 OAuth 区的授权按钮；旧成员凭据的撤销会让原身份门禁失效，也会使对应 OAuth 请求失败。旧 URL 的最终停用仍是阶段 4 单独确认事项。
